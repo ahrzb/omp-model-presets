@@ -1,6 +1,6 @@
 # OMP Model Presets
 
-Switch every [Oh My Pi](https://github.com/can1357/oh-my-pi) model role between complete OpenAI Codex and Anthropic Claude presets with one slash command.
+Switch every [Oh My Pi](https://github.com/can1357/oh-my-pi) model role at once with a slash command. Presets are yours: the plugin ships none and never rewrites the ones you define.
 
 ## Install
 
@@ -8,12 +8,13 @@ Switch every [Oh My Pi](https://github.com/can1357/oh-my-pi) model role between 
 omp plugin install @ahrzb/omp-model-presets
 ```
 
-Restart OMP, then choose a preset globally (the backward-compatible default), for the current project, or only for the current session:
+Restart OMP, then capture your current roles as a preset and switch between them globally (the default), for the current project, or only for the current session:
 
 ```text
-/preset openai
-/preset anthropic --scope project
-/preset openai --scope session
+/preset new work
+/preset work
+/preset review --scope project
+/preset work --scope session
 ```
 
 ## Commands
@@ -26,9 +27,7 @@ Restart OMP, then choose a preset globally (the backward-compatible default), fo
 | `/preset list` | List available presets. |
 | `/preset new <name> [--scope global\|project\|session]` | Create a preset from the effective `modelRoles` mapping and select it at that scope. |
 
-Typing `/preset ` now completes built-in and custom preset names, actions, `--scope`, and scope values. The editor also shows contextual inline usage hints as you type.
-
-Built-in presets: `anthropic`, `openai`, and `mix` (Claude for the main session and planning, Codex for `slow`/`task`, Fable as the advisor).
+Typing `/preset ` completes your preset names, actions, `--scope`, and scope values. The editor also shows contextual inline usage hints as you type.
 
 ## Scopes
 
@@ -46,9 +45,9 @@ session > project > global > OMP defaults
 
 Setting or clearing one scope does not delete another scope. For example, a session preset continues to take precedence if you change the global preset underneath it.
 
-## Custom presets
+## Presets
 
-Create and select a preset from the effective roles currently used by OMP:
+The plugin starts empty. Configure the roles you want through OMP's normal model settings, then capture them:
 
 ```text
 /preset new work
@@ -58,7 +57,7 @@ Create and select a preset from the effective roles currently used by OMP:
 
 The new preset becomes active at the requested scope. Continue changing roles through OMP's normal model settings; before you switch to another preset, create another preset, or clear a scope with `/preset default`, the plugin copies the current roles from the effective active scope back into that preset automatically.
 
-This also makes the built-in presets customizable. Select `openai`, change its roles in OMP settings, then switch away. The modified roles are stored as a custom `openai` override. To restore the shipped `openai` preset, switch away from it and delete its entry from `model-presets.json`.
+No preset definitions are bundled, so upgrading the plugin never changes, overwrites, or conflicts with your roles, and never pins a model id that the providers have since retired.
 
 ### File location
 
@@ -78,7 +77,7 @@ Append `model-presets.json` to that path. The file contains one top-level JSON p
 
 The active global preset is tracked beside it in `model-presets.active`. The active project preset is tracked in `<cwd>/.omp/model-presets.active`. Session state is recorded in the OMP session transcript rather than a separate file.
 
-Model strings use OMP's `provider/model:thinking-level` format. Custom presets override built-ins with the same name. Preset names may contain lowercase letters, numbers, `.`, `_`, and `-`; `default`, `list`, `current`, and `new` are reserved.
+Model strings use OMP's `provider/model:thinking-level` format. Preset names may contain lowercase letters, numbers, `.`, `_`, and `-`; `default`, `list`, `current`, and `new` are reserved.
 
 ## OMP system defaults
 

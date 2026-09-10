@@ -1,48 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-const BUILT_IN_PRESETS = {
-  anthropic: {
-    default: "anthropic/claude-opus-5:high",
-    slow: "anthropic/claude-opus-5:max",
-    smol: "anthropic/claude-haiku-4-5:high",
-    plan: "anthropic/claude-opus-5:xhigh",
-    advisor: "anthropic/claude-opus-5:high",
-    task: "anthropic/claude-sonnet-5:high",
-    designer: "anthropic/claude-opus-5:high",
-    vision: "anthropic/claude-opus-5:medium",
-    commit: "anthropic/claude-haiku-4-5:low",
-    tiny: "anthropic/claude-haiku-4-5:minimal",
-    spark: "anthropic/claude-haiku-4-5:medium",
-  },
-  openai: {
-    default: "openai-codex/gpt-5.6-sol:high",
-    slow: "openai-codex/gpt-6-astra:xhigh",
-    smol: "openai-codex/gpt-5.6-luna:medium",
-    plan: "openai-codex/gpt-5.6-sol:xhigh",
-    advisor: "openai-codex/gpt-5.6-sol:high",
-    task: "openai-codex/gpt-5.6-terra:high",
-    designer: "openai-codex/gpt-5.6-sol:high",
-    vision: "openai-codex/gpt-5.6-sol:medium",
-    commit: "openai-codex/gpt-5.6-luna:low",
-    tiny: "openai-codex/gpt-5.6-luna:low",
-    spark: "openai-codex/gpt-5.3-codex-spark:medium",
-  },
-  mix: {
-    default: "anthropic/claude-opus-5:high",
-    slow: "openai-codex/gpt-6-astra:xhigh",
-    smol: "openai-codex/gpt-5.6-luna:low",
-    plan: "anthropic/claude-opus-5:xhigh",
-    advisor: "anthropic/claude-fable-5-1:max",
-    task: "openai-codex/gpt-5.6-sol:high",
-    designer: "anthropic/claude-sonnet-5:high",
-    vision: "anthropic/claude-sonnet-5:high",
-    commit: "anthropic/claude-haiku-4-5:low",
-    tiny: "anthropic/claude-haiku-4-5:minimal",
-    spark: "openai-codex/gpt-5.3-codex-spark:medium",
-  },
-};
-
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]);
 
 function splitSpec(spec) {
@@ -274,7 +232,7 @@ async function refreshCompletionPresets(pi, cwd, completionState) {
   try {
     const storage = await presetStorage(pi, cwd);
     const custom = await readCustomPresets(storage.presetsFile);
-    completionState.names = Object.keys(availablePresets(custom));
+    completionState.names = Object.keys(custom);
   } catch (error) {
     pi.logger?.warn?.("Could not refresh preset completions", { error });
   }
@@ -431,21 +389,21 @@ async function restoreSessionPreset(pi, ctx, runtimeState) {
     return;
   }
   const storage = await presetStorage(pi, ctx.cwd);
-  const presets = availablePresets(await readCustomPresets(storage.presetsFile));
+  const presets = await readCustomPresets(storage.presetsFile);
   const preset = presets[current.name];
   if (!preset) throw new Error(`Session preset '${current.name}' no longer exists`);
   applySessionRoles(settings, preset, current.base);
   runtimeState.base = current.base;
 }
 
-function availablePresets(custom) {
-  return { ...BUILT_IN_PRESETS, ...custom };
+function emptyPresetHint(action) {
+  return `${action} No presets defined yet. Create one with '/preset new <name>'.`;
 }
 
 export default function modelPresets(pi) {
   pi.setLabel("Model Presets");
   const runtimeState = { base: undefined };
-  const completionState = { names: Object.keys(BUILT_IN_PRESETS), hintsInstalled: false };
+  const completionState = { names: [], hintsInstalled: false };
 
   for (const event of ["session_start", "session_switch", "session_branch", "session_tree"]) {
     pi.on(event, async (_event, ctx) => {
@@ -479,13 +437,13 @@ export default function modelPresets(pi) {
           await syncActivePreset(pi, ctx, storage);
           const roles = settings.getModelRoles();
           const custom = await readCustomPresets(storage.presetsFile);
-          if (Object.hasOwn(availablePresets(custom), name)) {
+          if (Object.hasOwn(custom, name)) {
             throw new Error(`Preset '${name}' already exists`);
           }
           validatePreset(name, roles);
           custom[name] = roles;
           await writeCustomPresets(storage.presetsFile, custom);
-          completionState.names = Object.keys(availablePresets(custom));
+          completionState.names = Object.keys(custom);
           await setScopedRoles(pi, ctx, scope, roles, name, runtimeState);
           if (scope !== "session") await setActivePreset(activeFile(storage, scope), name);
           ctx.ui.notify(`Preset '${name}' created and selected for ${scope} scope`, "info");
@@ -504,13 +462,19 @@ export default function modelPresets(pi) {
         }
 
         if (action === "list") {
-          const presets = availablePresets(await readCustomPresets(storage.presetsFile));
-          ctx.ui.notify(`Available presets: default, ${Object.keys(presets).join(", ")}`, "info");
+          const presets = await readCustomPresets(storage.presetsFile);
+          const names = Object.keys(presets);
+          ctx.ui.notify(
+            names.length > 0
+              ? `Available presets: default, ${names.join(", ")}`
+              : emptyPresetHint("Available presets: default."),
+            "info",
+          );
           return;
         }
 
         if (action === "current") {
-          const presets = availablePresets(await readCustomPresets(storage.presetsFile));
+          const presets = await readCustomPresets(storage.presetsFile);
           const session = sessionState(ctx)?.name;
           const project = await readActivePreset(storage.projectActiveFile);
           const global = await readActivePreset(storage.globalActiveFile);
@@ -530,11 +494,14 @@ export default function modelPresets(pi) {
         }
 
         await syncActivePreset(pi, ctx, storage);
-        const presets = availablePresets(await readCustomPresets(storage.presetsFile));
+        const presets = await readCustomPresets(storage.presetsFile);
         const preset = Object.hasOwn(presets, action) ? presets[action] : undefined;
         if (!preset) {
+          const names = Object.keys(presets);
           ctx.ui.notify(
-            `Unknown preset '${action}'. Available: ${Object.keys(presets).join(", ")}`,
+            names.length > 0
+              ? `Unknown preset '${action}'. Available: ${names.join(", ")}`
+              : emptyPresetHint(`Unknown preset '${action}'.`),
             "error",
           );
           return;

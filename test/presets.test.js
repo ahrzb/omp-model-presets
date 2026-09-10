@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -66,6 +66,15 @@ test("presets apply independently to global, project, and session scopes", async
     rm(agentDir, { recursive: true, force: true }),
     rm(cwd, { recursive: true, force: true }),
   ]));
+
+  await writeFile(
+    join(agentDir, "model-presets.json"),
+    JSON.stringify({
+      openai: { default: "openai-codex/gpt-5.6-sol:high", smol: "openai-codex/gpt-5.6-luna:low" },
+      anthropic: { default: "anthropic/claude-opus-5:high", smol: "anthropic/claude-haiku-4-5:high" },
+    }),
+    "utf8",
+  );
 
   const settings = createSettings();
   const entries = [];
@@ -140,6 +149,7 @@ test("presets apply independently to global, project, and session scopes", async
   };
 
   modelPresets(pi);
+  await events.get("session_start")({ type: "session_start" }, ctx);
   assert.deepEqual(
     command.getArgumentCompletions("op").map(({ label, hint }) => ({ label, hint })),
     [{ label: "openai", hint: "[--scope global|project|session]" }],
