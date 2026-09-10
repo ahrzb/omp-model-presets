@@ -1,0 +1,13 @@
+{
+  "name": "@ahrzb/omp-model-presets",
+  "version": "0.1.0",
+  "description": "Switch all Oh My Pi model roles between provider presets",
+  "license": "MIT",
+  "files": ["index.js"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "omp": {
+    "extensions": ["./index.js"]
+  }
+}
