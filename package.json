@@ -1,6 +1,6 @@
 {
   "name": "@ahrzb/omp-model-presets",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Oh My Pi (OMP) plugin that switches every model role between OpenAI Codex and Anthropic Claude presets",
   "license": "MIT",
   "author": "ahrzb",

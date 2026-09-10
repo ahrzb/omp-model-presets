@@ -28,6 +28,8 @@ Restart OMP, then choose a preset globally (the backward-compatible default), fo
 
 Typing `/preset ` now completes built-in and custom preset names, actions, `--scope`, and scope values. The editor also shows contextual inline usage hints as you type.
 
+Built-in presets: `anthropic`, `openai`, and `mix` (Claude for the main session and planning, Codex for `slow`/`task`, Fable as the advisor).
+
 ## Scopes
 
 Scopes follow OMP's normal precedence:
