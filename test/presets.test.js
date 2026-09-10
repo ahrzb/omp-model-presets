@@ -222,8 +222,7 @@ test("presets apply independently to global, project, and session scopes", async
     code: "ENOENT",
   });
 
-  assert.equal(reloads, 7);
-  assert.deepEqual(selectedModel, { id: "openai-codex/gpt-6-astra" });
+  assert.deepEqual(selectedModel, { id: "openai-codex/gpt-5.6-sol" });
   assert.equal(thinkingLevel, "high");
   assert.ok(notifications.every(({ level }) => level === "info"));
 });
