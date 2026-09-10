@@ -71,7 +71,9 @@ test("presets apply independently to global, project, and session scopes", async
   const entries = [];
   const events = new Map();
   const notifications = [];
+  let command;
   let handler;
+  let inlineProvider;
   let selectedModel;
   let thinkingLevel;
   let reloads = 0;
@@ -82,8 +84,9 @@ test("presets apply independently to global, project, and session scopes", async
     on(event, callback) {
       events.set(event, callback);
     },
-    registerCommand(_name, command) {
-      handler = command.handler;
+    registerCommand(_name, registered) {
+      command = registered;
+      handler = registered.handler;
     },
     appendEntry(customType, data) {
       entries.push({ type: "custom", customType, data });
@@ -112,6 +115,19 @@ test("presets apply independently to global, project, and session scopes", async
       notify(message, level) {
         notifications.push({ message, level });
       },
+      addAutocompleteProvider(factory) {
+        inlineProvider = factory({
+          async getSuggestions() {
+            return null;
+          },
+          applyCompletion(lines, cursorLine, cursorCol) {
+            return { lines, cursorLine, cursorCol };
+          },
+          getInlineHint() {
+            return null;
+          },
+        });
+      },
     },
     models: {
       resolve(spec) {
@@ -124,6 +140,18 @@ test("presets apply independently to global, project, and session scopes", async
   };
 
   modelPresets(pi);
+  assert.deepEqual(
+    command.getArgumentCompletions("op").map(({ label, hint }) => ({ label, hint })),
+    [{ label: "openai", hint: "[--scope global|project|session]" }],
+  );
+  assert.deepEqual(
+    command.getArgumentCompletions("openai ").map(({ label, hint }) => ({ label, hint })),
+    [{ label: "--scope", hint: "<global|project|session>" }],
+  );
+  assert.deepEqual(
+    command.getArgumentCompletions("openai --scope p").map(({ label }) => label),
+    ["project"],
+  );
 
   await handler("openai", ctx);
   assert.match(settings.layers().global.default, /^openai-codex\//);
@@ -145,9 +173,28 @@ test("presets apply independently to global, project, and session scopes", async
   settings.clearOverride("modelRoles");
   await events.get("session_start")({ type: "session_start" }, ctx);
   assert.match(settings.layers().runtime.default, /^openai-codex\//);
+  assert.equal(
+    inlineProvider.getInlineHint(["/preset "], 0, "/preset ".length),
+    "<preset|default|current|list|new> [--scope global|project|session]",
+  );
+  assert.equal(
+    inlineProvider.getInlineHint(["/preset op"], 0, "/preset op".length),
+    "enai [--scope global|project|session]",
+  );
+  assert.equal(
+    inlineProvider.getInlineHint(
+      ["/preset openai --scope pr"],
+      0,
+      "/preset openai --scope pr".length,
+    ),
+    "oject",
+  );
 
   await handler("current", ctx);
   assert.match(notifications.at(-1).message, /session=openai.*project=anthropic.*global=openai/);
+
+  await handler("new work --scope session", ctx);
+  assert.deepEqual(command.getArgumentCompletions("w").map(({ label }) => label), ["work"]);
 
   const activeSessionEntries = entries.splice(0);
   await events.get("session_switch")({ type: "session_switch" }, ctx);
@@ -175,7 +222,7 @@ test("presets apply independently to global, project, and session scopes", async
     code: "ENOENT",
   });
 
-  assert.equal(reloads, 6);
+  assert.equal(reloads, 7);
   assert.deepEqual(selectedModel, { id: "openai-codex/gpt-6-astra" });
   assert.equal(thinkingLevel, "high");
   assert.ok(notifications.every(({ level }) => level === "info"));

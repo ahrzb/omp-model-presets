@@ -26,6 +26,8 @@ Restart OMP, then choose a preset globally (the backward-compatible default), fo
 | `/preset list` | List available presets. |
 | `/preset new <name> [--scope global\|project\|session]` | Create a preset from the effective `modelRoles` mapping and select it at that scope. |
 
+Typing `/preset ` now completes built-in and custom preset names, actions, `--scope`, and scope values. The editor also shows contextual inline usage hints as you type.
+
 ## Scopes
 
 Scopes follow OMP's normal precedence:

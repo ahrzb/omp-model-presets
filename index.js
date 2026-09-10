@@ -138,6 +138,136 @@ async function setActivePreset(file, name) {
 const SCOPES = new Set(["global", "project", "session"]);
 const SESSION_STATE_TYPE = "model-presets.active";
 
+const SCOPE_HINT = "[--scope global|project|session]";
+const SCOPE_VALUE_HINT = "<global|project|session>";
+const ACTION_COMPLETIONS = [
+  { name: "default", description: "Clear the selected scope", hint: SCOPE_HINT },
+  { name: "current", description: "Show active and effective presets" },
+  { name: "list", description: "List available presets" },
+  { name: "new", description: "Create a preset from current roles", hint: `<name> ${SCOPE_HINT}` },
+];
+
+function presetArgumentCompletions(argumentPrefix, presetNames) {
+  const text = argumentPrefix.trimStart().toLowerCase();
+  const trailingSpace = /\s$/.test(text);
+  const words = text.split(/\s+/).filter(Boolean);
+  const prefix = trailingSpace ? "" : (words.pop() ?? "");
+
+  if (words.at(-1) === "--scope") {
+    const matches = [...SCOPES]
+      .filter((scope) => scope.startsWith(prefix))
+      .map((scope) => ({
+        value: `${words.join(" ")} ${scope} `,
+        label: scope,
+        description: `Use ${scope} scope`,
+      }));
+    return matches.length > 0 ? matches : null;
+  }
+  if (words.includes("--scope")) return null;
+
+  if (words.length === 0) {
+    const candidates = [
+      ...presetNames.map((name) => ({
+        name,
+        description: "Apply preset",
+        hint: SCOPE_HINT,
+      })),
+      ...ACTION_COMPLETIONS,
+    ];
+    const matches = candidates
+      .filter(({ name }) => name.startsWith(prefix))
+      .map(({ name, description, hint }) => ({
+        value: `${name} `,
+        label: name,
+        description,
+        ...(hint ? { hint } : {}),
+      }));
+    return matches.length > 0 ? matches : null;
+  }
+
+  const [action] = words;
+  const acceptsScope = (
+    words.length === 1
+    && action !== "new"
+    && action !== "current"
+    && action !== "list"
+    && (action === "default" || presetNames.includes(action))
+  ) || (action === "new" && words.length === 2);
+  if (!acceptsScope || !"--scope".startsWith(prefix)) return null;
+  return [{
+    value: `${words.join(" ")} --scope `,
+    label: "--scope",
+    description: "Choose where the preset applies",
+    hint: SCOPE_VALUE_HINT,
+  }];
+}
+
+function presetInlineHint(argumentText, presetNames) {
+  const text = argumentText.trimStart().toLowerCase();
+  if (!text) return `<preset|default|current|list|new> ${SCOPE_HINT}`;
+
+  const trailingSpace = /\s$/.test(text);
+  const words = text.split(/\s+/).filter(Boolean);
+  const scopeIndex = words.indexOf("--scope");
+  if (scopeIndex !== -1) {
+    const scopePrefix = words[scopeIndex + 1];
+    if (!scopePrefix) return trailingSpace ? SCOPE_VALUE_HINT : ` ${SCOPE_VALUE_HINT}`;
+    if (trailingSpace || scopeIndex !== words.length - 2) return null;
+    const scope = [...SCOPES].find((candidate) => candidate.startsWith(scopePrefix));
+    return scope?.slice(scopePrefix.length) || null;
+  }
+
+  const [action] = words;
+  if (!trailingSpace && words.length === 1) {
+    const candidate = [
+      ...presetNames.map((name) => ({ name, hint: SCOPE_HINT })),
+      ...ACTION_COMPLETIONS,
+    ].find(({ name }) => name.startsWith(action));
+    if (!candidate) return null;
+    const remaining = candidate.name.slice(action.length);
+    if (remaining) return `${remaining}${candidate.hint ? ` ${candidate.hint}` : ""}`;
+    return candidate.hint ? ` ${candidate.hint}` : null;
+  }
+
+  if (action === "new") {
+    if (words.length === 1) return `<name> ${SCOPE_HINT}`;
+    return trailingSpace ? `--scope ${SCOPE_VALUE_HINT}` : ` ${SCOPE_HINT}`;
+  }
+  if (action === "current" || action === "list" || !presetNames.includes(action) && action !== "default") {
+    return null;
+  }
+  return trailingSpace ? `--scope ${SCOPE_VALUE_HINT}` : ` ${SCOPE_HINT}`;
+}
+
+function installPresetInlineHints(ctx, completionState) {
+  if (typeof ctx.ui.addAutocompleteProvider !== "function") return;
+  ctx.ui.addAutocompleteProvider((current) => new Proxy(current, {
+    get(target, property) {
+      if (property === "getInlineHint") {
+        return (lines, cursorLine, cursorCol) => {
+          const beforeCursor = (lines[cursorLine] ?? "").slice(0, cursorCol);
+          const match = /^\s*\/preset\s(.*)$/.exec(beforeCursor);
+          const hint = match ? presetInlineHint(match[1], completionState.names) : null;
+          return hint ?? target.getInlineHint?.call(target, lines, cursorLine, cursorCol) ?? null;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }));
+}
+
+async function refreshCompletionPresets(pi, cwd, completionState) {
+  try {
+    const storage = await presetStorage(pi, cwd);
+    const custom = await readCustomPresets(storage.presetsFile);
+    completionState.names = Object.keys(availablePresets(custom));
+  } catch (error) {
+    pi.logger?.warn?.("Could not refresh preset completions", { error });
+  }
+}
+
+
 function parseCommand(args) {
   const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
   let scope = "global";
@@ -302,13 +432,23 @@ function availablePresets(custom) {
 export default function modelPresets(pi) {
   pi.setLabel("Model Presets");
   const runtimeState = { base: undefined };
+  const completionState = { names: Object.keys(BUILT_IN_PRESETS), hintsInstalled: false };
 
   for (const event of ["session_start", "session_switch", "session_branch", "session_tree"]) {
-    pi.on(event, async (_event, ctx) => restoreSessionPreset(pi, ctx, runtimeState));
+    pi.on(event, async (_event, ctx) => {
+      if (event === "session_start" && !completionState.hintsInstalled) {
+        installPresetInlineHints(ctx, completionState);
+        completionState.hintsInstalled = true;
+      }
+      await restoreSessionPreset(pi, ctx, runtimeState);
+      await refreshCompletionPresets(pi, ctx.cwd, completionState);
+    });
   }
 
   pi.registerCommand("preset", {
     description: "Switch, list, inspect, or create scoped model-role presets",
+    getArgumentCompletions: (argumentPrefix) =>
+      presetArgumentCompletions(argumentPrefix, completionState.names),
     handler: async (args, ctx) => {
       try {
         const { action, rest, scope } = parseCommand(args);
@@ -332,6 +472,7 @@ export default function modelPresets(pi) {
           validatePreset(name, roles);
           custom[name] = roles;
           await writeCustomPresets(storage.presetsFile, custom);
+          completionState.names = Object.keys(availablePresets(custom));
           await setScopedRoles(pi, ctx, scope, roles, name, runtimeState);
           if (scope !== "session") await setActivePreset(activeFile(storage, scope), name);
           ctx.ui.notify(`Preset '${name}' created and selected for ${scope} scope`, "info");
