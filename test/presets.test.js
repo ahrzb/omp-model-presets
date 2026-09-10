@@ -6,15 +6,19 @@ import test from "node:test";
 
 import modelPresets from "../index.js";
 
-test("saved roles override built-ins and default restores OMP roles", async (t) => {
+test("active presets retain OMP setting changes before switching", async (t) => {
   const agentDir = await mkdtemp(join(tmpdir(), "omp-model-presets-"));
   t.after(() => rm(agentDir, { recursive: true, force: true }));
 
-  const savedRoles = {
+  const initialRoles = {
     default: "custom/default:high",
     task: "custom/task:low",
   };
-  let currentRoles = savedRoles;
+  const editedRoles = {
+    default: "other/model:medium",
+    task: "other/task:low",
+  };
+  let currentRoles = initialRoles;
   let handler;
   let appliedRoles;
   let selectedModel;
@@ -46,6 +50,7 @@ test("saved roles override built-ins and default restores OMP roles", async (t) 
       }
       if (args[0] === "config" && args[1] === "set") {
         appliedRoles = JSON.parse(args[3]);
+        currentRoles = appliedRoles;
         return { code: 0, stdout: "", stderr: "" };
       }
       throw new Error(`Unexpected omp invocation: ${args.join(" ")}`);
@@ -75,26 +80,36 @@ test("saved roles override built-ins and default restores OMP roles", async (t) 
   };
 
   modelPresets(pi);
-  await handler("save openai", ctx);
+  await handler("new work", ctx);
 
   assert.deepEqual(
     JSON.parse(await readFile(join(agentDir, "model-presets.json"), "utf8")),
-    { openai: savedRoles },
+    { work: initialRoles },
+  );
+  assert.equal(await readFile(join(agentDir, "model-presets.active"), "utf8"), "work\n");
+
+  currentRoles = editedRoles;
+  await handler("anthropic", ctx);
+
+  assert.deepEqual(
+    JSON.parse(await readFile(join(agentDir, "model-presets.json"), "utf8")).work,
+    editedRoles,
   );
 
-  currentRoles = { default: "other/model:medium" };
-  await handler("openai", ctx);
+  await handler("work", ctx);
 
-  assert.deepEqual(appliedRoles, savedRoles);
-  assert.deepEqual(selectedModel, { id: "custom/default" });
-  assert.equal(thinkingLevel, "high");
-  assert.equal(reloads, 1);
+  assert.deepEqual(appliedRoles, editedRoles);
+  assert.deepEqual(selectedModel, { id: "other/model" });
+  assert.equal(thinkingLevel, "medium");
+  assert.equal(await readFile(join(agentDir, "model-presets.active"), "utf8"), "work\n");
+  assert.equal(reloads, 2);
 
   await handler("default", ctx);
 
   assert.equal(resets, 1);
-  assert.deepEqual(selectedModel, { id: "custom/default" });
-  assert.equal(thinkingLevel, "high");
-  assert.equal(reloads, 2);
-  assert.deepEqual(notifications.map(({ level }) => level), ["info", "info", "info"]);
+  await assert.rejects(readFile(join(agentDir, "model-presets.active"), "utf8"), {
+    code: "ENOENT",
+  });
+  assert.equal(reloads, 3);
+  assert.deepEqual(notifications.map(({ level }) => level), ["info", "info", "info", "info"]);
 });

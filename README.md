@@ -24,15 +24,21 @@ Restart OMP, then choose a preset:
 | `/preset default` | Restore OMP's system-default `modelRoles` instead of using a named preset. |
 | `/preset current` | Show the matching preset, or `custom` when roles differ. |
 | `/preset list` | List available presets. |
-| `/preset save <name>` | Save the current complete `modelRoles` mapping as a preset. |
+| `/preset new <name>` | Create and select a preset from the current complete `modelRoles` mapping. |
 
 ## Custom presets
 
-Save the current roles under any lowercase name:
+Create a preset from the roles currently stored by OMP:
 
 ```text
-/preset save work
+/preset new work
 ```
+
+The new preset becomes active. Continue changing roles through OMP's normal settings UI; those changes remain persisted in OMP's `config.yml`. Before you switch to another preset, create another preset, or run `/preset default`, the plugin copies the current `modelRoles` back into the active preset automatically.
+
+This also makes the built-in presets customizable. Select `openai`, change its roles in OMP settings, then switch away. The modified roles are stored as a custom `openai` override. To restore the shipped `openai` preset, switch away from it and delete its entry from `model-presets.json`.
+
+### File location
 
 All file-backed presets live in one `model-presets.json` file in the active OMP agent directory:
 
@@ -46,17 +52,9 @@ All file-backed presets live in one `model-presets.json` file in the active OMP 
 omp config path
 ```
 
-Append `model-presets.json` to that path. The file contains one top-level JSON property per preset. You can place an existing preset file there or let `/preset save <name>` create it.
+Append `model-presets.json` to that path. The file contains one top-level JSON property per preset. You can place an existing preset file there or let `/preset new <name>` create it.
 
-To customize a preset, save a complete working role configuration first, then edit its model strings in `model-presets.json`. Model strings use OMP's `provider/model:thinking-level` format.
-
-Custom presets override built-ins with the same name. For example, after configuring roles manually, this replaces the shipped `openai` preset with your current roles:
-
-```text
-/preset save openai
-```
-
-Delete the `openai` entry from `model-presets.json` to restore the shipped preset. Preset names may contain lowercase letters, numbers, `.`, `_`, and `-`; `default`, `list`, `current`, and `save` are reserved.
+Model strings use OMP's `provider/model:thinking-level` format. Custom presets override built-ins with the same name. Preset names may contain lowercase letters, numbers, `.`, `_`, and `-`; `default`, `list`, `current`, and `new` are reserved.
 
 ## OMP system defaults
 
@@ -66,7 +64,7 @@ Use OMP's own system role mapping instead of any named preset:
 /preset default
 ```
 
-This runs `omp config reset modelRoles` and reloads the session so subsequent role resolution uses OMP's system defaults. It does not delete your custom preset file. Project settings and command-line configuration overlays still take precedence according to OMP's normal configuration rules.
+The plugin first saves any pending settings changes to the active preset, then runs `omp config reset modelRoles` and reloads the session so subsequent role resolution uses OMP's system defaults. It does not delete your custom preset file. Project settings and command-line configuration overlays still take precedence according to OMP's normal configuration rules.
 
 ## What it changes
 

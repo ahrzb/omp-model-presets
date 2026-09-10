@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const BUILT_IN_PRESETS = {
@@ -87,80 +87,131 @@ async function readConfiguredRoles(pi, cwd) {
   return roles;
 }
 
-async function readCustomPresets(pi, cwd) {
+async function presetStorage(pi, cwd) {
   const agentDir = await runOmp(pi, ["config", "path"], cwd, "Could not find the OMP config directory");
-  const file = join(agentDir, "model-presets.json");
+  return {
+    presetsFile: join(agentDir, "model-presets.json"),
+    activeFile: join(agentDir, "model-presets.active"),
+  };
+}
+
+async function readCustomPresets(file) {
   let presets;
   try {
     presets = JSON.parse(await readFile(file, "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT") return { file, presets: {} };
+    if (error?.code === "ENOENT") return {};
     throw new Error(`Could not read ${file}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   if (!isRecord(presets)) throw new Error(`${file} must contain a JSON object`);
   for (const [name, preset] of Object.entries(presets)) validatePreset(name, preset);
-  return { file, presets };
+  return presets;
 }
 
-async function availablePresets(pi, cwd) {
-  const custom = await readCustomPresets(pi, cwd);
-  return { ...custom, presets: { ...BUILT_IN_PRESETS, ...custom.presets } };
+async function writeCustomPresets(file, presets) {
+  await writeFile(file, `${JSON.stringify(presets, null, 2)}\n`, "utf8");
 }
 
-async function savePreset(pi, cwd, name) {
-  if (["default", "list", "current", "save"].includes(name)) {
-    throw new Error(`'${name}' is reserved and cannot be used as a preset name`);
+async function readActivePreset(file) {
+  try {
+    const name = (await readFile(file, "utf8")).trim();
+    if (!name) return undefined;
+    validatePresetName(name);
+    return name;
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw new Error(`Could not read ${file}: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+async function setActivePreset(file, name) {
+  if (name) await writeFile(file, `${name}\n`, "utf8");
+  else await rm(file, { force: true });
+}
+
+async function syncActivePreset(pi, cwd, storage) {
+  const active = await readActivePreset(storage.activeFile);
+  if (!active) return undefined;
   const roles = await readConfiguredRoles(pi, cwd);
-  validatePreset(name, roles);
-  const custom = await readCustomPresets(pi, cwd);
-  custom.presets[name] = roles;
-  await writeFile(custom.file, `${JSON.stringify(custom.presets, null, 2)}\n`, "utf8");
-  return custom.file;
+  validatePreset(active, roles);
+  const custom = await readCustomPresets(storage.presetsFile);
+  custom[active] = roles;
+  await writeCustomPresets(storage.presetsFile, custom);
+  return roles;
+}
+
+function availablePresets(custom) {
+  return { ...BUILT_IN_PRESETS, ...custom };
 }
 
 export default function modelPresets(pi) {
   pi.setLabel("Model Presets");
 
   pi.registerCommand("preset", {
-    description: "Switch, list, inspect, or save complete model-role presets",
+    description: "Switch, list, inspect, or create complete model-role presets",
     handler: async (args, ctx) => {
       const input = args.trim().toLowerCase();
       const [action, ...rest] = input ? input.split(/\s+/) : ["list"];
 
       try {
-        if (action === "save") {
+        const storage = await presetStorage(pi, ctx.cwd);
+
+        if (action === "new") {
           const name = rest.join(" ");
-          if (!name) throw new Error("Usage: /preset save <name>");
-          const file = await savePreset(pi, ctx.cwd, name);
-          ctx.ui.notify(`Preset '${name}' saved to ${file}`, "info");
+          if (!name) throw new Error("Usage: /preset new <name>");
+          validatePresetName(name);
+          if (["default", "list", "current", "new"].includes(name)) {
+            throw new Error(`'${name}' is reserved and cannot be used as a preset name`);
+          }
+
+          const roles = await syncActivePreset(pi, ctx.cwd, storage)
+            ?? await readConfiguredRoles(pi, ctx.cwd);
+          const custom = await readCustomPresets(storage.presetsFile);
+          if (Object.hasOwn(availablePresets(custom), name)) {
+            throw new Error(`Preset '${name}' already exists`);
+          }
+          validatePreset(name, roles);
+          custom[name] = roles;
+          await writeCustomPresets(storage.presetsFile, custom);
+          await setActivePreset(storage.activeFile, name);
+          ctx.ui.notify(`Preset '${name}' created and selected`, "info");
           return;
         }
+
         if (action === "default") {
+          await syncActivePreset(pi, ctx.cwd, storage);
           await runOmp(
             pi,
             ["config", "reset", "modelRoles"],
             ctx.cwd,
             "Could not restore the default modelRoles",
           );
+          await setActivePreset(storage.activeFile);
           ctx.ui.notify("OMP's default model roles restored", "info");
           await ctx.reload();
           return;
         }
 
-        const { presets } = await availablePresets(pi, ctx.cwd);
         if (action === "list") {
-          ctx.ui.notify(`Available presets: ${Object.keys(presets).join(", ")}`, "info");
+          const presets = availablePresets(await readCustomPresets(storage.presetsFile));
+          ctx.ui.notify(`Available presets: default, ${Object.keys(presets).join(", ")}`, "info");
           return;
         }
 
         if (action === "current") {
-          const current = matchingPreset(await readConfiguredRoles(pi, ctx.cwd), presets);
+          const presets = availablePresets(await readCustomPresets(storage.presetsFile));
+          const roles = await readConfiguredRoles(pi, ctx.cwd);
+          const active = await readActivePreset(storage.activeFile);
+          const current = active
+            ?? (Object.keys(roles).length === 0 ? "default" : matchingPreset(roles, presets));
           ctx.ui.notify(current ? `Current preset: ${current}` : "Current preset: custom", "info");
           return;
         }
 
+        await syncActivePreset(pi, ctx.cwd, storage);
+        const custom = await readCustomPresets(storage.presetsFile);
+        const presets = availablePresets(custom);
         const preset = Object.hasOwn(presets, action) ? presets[action] : undefined;
         if (!preset) {
           ctx.ui.notify(
@@ -187,6 +238,7 @@ export default function modelPresets(pi) {
           ctx.cwd,
           "Could not save modelRoles",
         );
+        await setActivePreset(storage.activeFile, action);
 
         const selected = resolved.get("default");
         if (selected) {
