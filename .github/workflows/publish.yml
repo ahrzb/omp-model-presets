@@ -1,0 +1,29 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm test
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          expected=v$(node -p "require('./package.json').version")
+          test "$expected" = "$GITHUB_REF_NAME"
+      - run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_CI_TOKEN }}

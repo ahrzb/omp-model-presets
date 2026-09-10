@@ -1,4 +1,7 @@
-const PRESETS = {
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+const BUILT_IN_PRESETS = {
   anthropic: {
     default: "anthropic/claude-opus-5:high",
     slow: "anthropic/claude-opus-5:max",
@@ -37,74 +40,153 @@ function splitSpec(spec) {
     : { model: spec };
 }
 
-function matchingPreset(roles) {
-  return Object.entries(PRESETS).find(([, preset]) =>
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validatePresetName(name) {
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) {
+    throw new Error(`Invalid preset name '${name}'. Use lowercase letters, numbers, '.', '_' or '-'`);
+  }
+}
+
+function validatePreset(name, preset) {
+  validatePresetName(name);
+  if (!isRecord(preset) || Object.keys(preset).length === 0) {
+    throw new Error(`Preset '${name}' must be a non-empty object`);
+  }
+  for (const [role, spec] of Object.entries(preset)) {
+    if (!role || typeof spec !== "string" || !spec.trim()) {
+      throw new Error(`Preset '${name}' has an invalid value for role '${role}'`);
+    }
+  }
+}
+
+function matchingPreset(roles, presets) {
+  return Object.entries(presets).find(([, preset]) =>
     Object.keys(preset).length === Object.keys(roles).length
       && Object.entries(preset).every(([role, spec]) => roles[role] === spec),
   )?.[0];
 }
 
+async function runOmp(pi, args, cwd, fallback) {
+  const result = await pi.exec("omp", args, { cwd });
+  if (result.code !== 0) throw new Error(result.stderr.trim() || fallback);
+  return result.stdout.trim();
+}
+
 async function readConfiguredRoles(pi, cwd) {
-  const result = await pi.exec("omp", ["config", "get", "modelRoles", "--json"], { cwd });
-  if (result.code !== 0) throw new Error(result.stderr.trim() || "Could not read modelRoles");
-  return JSON.parse(result.stdout).value;
+  const output = await runOmp(
+    pi,
+    ["config", "get", "modelRoles", "--json"],
+    cwd,
+    "Could not read modelRoles",
+  );
+  const roles = JSON.parse(output).value;
+  if (!isRecord(roles)) throw new Error("OMP returned invalid modelRoles");
+  return roles;
+}
+
+async function readCustomPresets(pi, cwd) {
+  const agentDir = await runOmp(pi, ["config", "path"], cwd, "Could not find the OMP config directory");
+  const file = join(agentDir, "model-presets.json");
+  let presets;
+  try {
+    presets = JSON.parse(await readFile(file, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return { file, presets: {} };
+    throw new Error(`Could not read ${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!isRecord(presets)) throw new Error(`${file} must contain a JSON object`);
+  for (const [name, preset] of Object.entries(presets)) validatePreset(name, preset);
+  return { file, presets };
+}
+
+async function availablePresets(pi, cwd) {
+  const custom = await readCustomPresets(pi, cwd);
+  return { ...custom, presets: { ...BUILT_IN_PRESETS, ...custom.presets } };
+}
+
+async function savePreset(pi, cwd, name) {
+  if (["list", "current", "save"].includes(name)) {
+    throw new Error(`'${name}' is reserved and cannot be used as a preset name`);
+  }
+  const roles = await readConfiguredRoles(pi, cwd);
+  validatePreset(name, roles);
+  const custom = await readCustomPresets(pi, cwd);
+  custom.presets[name] = roles;
+  await writeFile(custom.file, `${JSON.stringify(custom.presets, null, 2)}\n`, "utf8");
+  return custom.file;
 }
 
 export default function modelPresets(pi) {
   pi.setLabel("Model Presets");
 
   pi.registerCommand("preset", {
-    description: "Switch every model role to a named provider preset",
+    description: "Switch, list, inspect, or save complete model-role presets",
     handler: async (args, ctx) => {
-      const name = args.trim().toLowerCase();
+      const input = args.trim().toLowerCase();
+      const [action, ...rest] = input ? input.split(/\s+/) : ["list"];
 
-      if (!name || name === "list") {
-        ctx.ui.notify(`Available presets: ${Object.keys(PRESETS).join(", ")}`, "info");
-        return;
-      }
-
-      if (name === "current") {
-        try {
-          const current = matchingPreset(await readConfiguredRoles(pi, ctx.cwd));
-          ctx.ui.notify(current ? `Current preset: ${current}` : "Current preset: custom", "info");
-        } catch (error) {
-          ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-        }
-        return;
-      }
-
-      const preset = Object.hasOwn(PRESETS, name) ? PRESETS[name] : undefined;
-      if (!preset) {
-        ctx.ui.notify(`Unknown preset '${name}'. Available: ${Object.keys(PRESETS).join(", ")}`, "error");
-        return;
-      }
-
-      const resolved = new Map();
-      for (const [role, spec] of Object.entries(preset)) {
-        const parsed = splitSpec(spec);
-        const model = ctx.models.resolve(parsed.model);
-        if (!model) {
-          ctx.ui.notify(`Cannot resolve ${role}: ${parsed.model}`, "error");
+      try {
+        if (action === "save") {
+          const name = rest.join(" ");
+          if (!name) throw new Error("Usage: /preset save <name>");
+          const file = await savePreset(pi, ctx.cwd, name);
+          ctx.ui.notify(`Preset '${name}' saved to ${file}`, "info");
           return;
         }
-        resolved.set(role, { ...parsed, model });
-      }
 
-      const result = await pi.exec(
-        "omp",
-        ["config", "set", "modelRoles", JSON.stringify(preset)],
-        { cwd: ctx.cwd },
-      );
-      if (result.code !== 0) {
-        ctx.ui.notify(result.stderr.trim() || "Could not save modelRoles", "error");
-        return;
-      }
+        const { presets } = await availablePresets(pi, ctx.cwd);
+        if (action === "list") {
+          ctx.ui.notify(`Available presets: ${Object.keys(presets).join(", ")}`, "info");
+          return;
+        }
 
-      const selected = resolved.get("default");
-      await pi.setModel(selected.model);
-      if (selected.thinking) pi.setThinkingLevel(selected.thinking);
-      ctx.ui.notify(`Preset '${name}' applied to ${resolved.size} roles`, "info");
-      await ctx.reload();
+        if (action === "current") {
+          const current = matchingPreset(await readConfiguredRoles(pi, ctx.cwd), presets);
+          ctx.ui.notify(current ? `Current preset: ${current}` : "Current preset: custom", "info");
+          return;
+        }
+
+        const preset = Object.hasOwn(presets, action) ? presets[action] : undefined;
+        if (!preset) {
+          ctx.ui.notify(
+            `Unknown preset '${action}'. Available: ${Object.keys(presets).join(", ")}`,
+            "error",
+          );
+          return;
+        }
+
+        const resolved = new Map();
+        for (const [role, spec] of Object.entries(preset)) {
+          const parsed = splitSpec(spec);
+          const model = ctx.models.resolve(parsed.model);
+          if (!model) {
+            ctx.ui.notify(`Cannot resolve ${role}: ${parsed.model}`, "error");
+            return;
+          }
+          resolved.set(role, { ...parsed, model });
+        }
+
+        await runOmp(
+          pi,
+          ["config", "set", "modelRoles", JSON.stringify(preset)],
+          ctx.cwd,
+          "Could not save modelRoles",
+        );
+
+        const selected = resolved.get("default");
+        if (selected) {
+          await pi.setModel(selected.model);
+          if (selected.thinking) pi.setThinkingLevel(selected.thinking);
+        }
+        ctx.ui.notify(`Preset '${action}' applied to ${resolved.size} roles`, "info");
+        await ctx.reload();
+      } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
     },
   });
 }
