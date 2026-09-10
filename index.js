@@ -109,7 +109,7 @@ async function availablePresets(pi, cwd) {
 }
 
 async function savePreset(pi, cwd, name) {
-  if (["list", "current", "save"].includes(name)) {
+  if (["default", "list", "current", "save"].includes(name)) {
     throw new Error(`'${name}' is reserved and cannot be used as a preset name`);
   }
   const roles = await readConfiguredRoles(pi, cwd);
@@ -135,6 +135,17 @@ export default function modelPresets(pi) {
           if (!name) throw new Error("Usage: /preset save <name>");
           const file = await savePreset(pi, ctx.cwd, name);
           ctx.ui.notify(`Preset '${name}' saved to ${file}`, "info");
+          return;
+        }
+        if (action === "default") {
+          await runOmp(
+            pi,
+            ["config", "reset", "modelRoles"],
+            ctx.cwd,
+            "Could not restore the default modelRoles",
+          );
+          ctx.ui.notify("OMP's default model roles restored", "info");
+          await ctx.reload();
           return;
         }
 

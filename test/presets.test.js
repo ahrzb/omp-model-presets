@@ -6,7 +6,7 @@ import test from "node:test";
 
 import modelPresets from "../index.js";
 
-test("saved roles override a built-in preset and can be restored", async (t) => {
+test("saved roles override built-ins and default restores OMP roles", async (t) => {
   const agentDir = await mkdtemp(join(tmpdir(), "omp-model-presets-"));
   t.after(() => rm(agentDir, { recursive: true, force: true }));
 
@@ -20,6 +20,7 @@ test("saved roles override a built-in preset and can be restored", async (t) => 
   let selectedModel;
   let thinkingLevel;
   let reloads = 0;
+  let resets = 0;
   const notifications = [];
 
   const pi = {
@@ -37,6 +38,11 @@ test("saved roles override a built-in preset and can be restored", async (t) => 
           stdout: JSON.stringify({ value: currentRoles }),
           stderr: "",
         };
+      }
+      if (args[0] === "config" && args[1] === "reset") {
+        currentRoles = {};
+        resets += 1;
+        return { code: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "config" && args[1] === "set") {
         appliedRoles = JSON.parse(args[3]);
@@ -83,5 +89,12 @@ test("saved roles override a built-in preset and can be restored", async (t) => 
   assert.deepEqual(selectedModel, { id: "custom/default" });
   assert.equal(thinkingLevel, "high");
   assert.equal(reloads, 1);
-  assert.deepEqual(notifications.map(({ level }) => level), ["info", "info"]);
+
+  await handler("default", ctx);
+
+  assert.equal(resets, 1);
+  assert.deepEqual(selectedModel, { id: "custom/default" });
+  assert.equal(thinkingLevel, "high");
+  assert.equal(reloads, 2);
+  assert.deepEqual(notifications.map(({ level }) => level), ["info", "info", "info"]);
 });

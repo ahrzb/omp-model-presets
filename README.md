@@ -21,6 +21,7 @@ Restart OMP, then choose a preset:
 | --- | --- |
 | `/preset openai` | Assign every OMP model role to the OpenAI Codex preset. |
 | `/preset anthropic` | Assign every OMP model role to the Anthropic Claude preset. |
+| `/preset default` | Restore OMP's system-default `modelRoles` instead of using a named preset. |
 | `/preset current` | Show the matching preset, or `custom` when roles differ. |
 | `/preset list` | List available presets. |
 | `/preset save <name>` | Save the current complete `modelRoles` mapping as a preset. |
@@ -33,11 +34,19 @@ Save the current roles under any lowercase name:
 /preset save work
 ```
 
-The plugin writes custom presets to `model-presets.json` in the active OMP agent directory. Find that directory with:
+All file-backed presets live in one `model-presets.json` file in the active OMP agent directory:
+
+- Windows: `%USERPROFILE%\.omp\agent\model-presets.json`
+- macOS and Linux: `~/.omp/agent/model-presets.json`
+- Named profiles: `~/.omp/profiles/<profile>/agent/model-presets.json`
+
+`PI_CODING_AGENT_DIR` is also honored. The authoritative location for the active profile is:
 
 ```sh
 omp config path
 ```
+
+Append `model-presets.json` to that path. The file contains one top-level JSON property per preset. You can place an existing preset file there or let `/preset save <name>` create it.
 
 To customize a preset, save a complete working role configuration first, then edit its model strings in `model-presets.json`. Model strings use OMP's `provider/model:thinking-level` format.
 
@@ -47,7 +56,17 @@ Custom presets override built-ins with the same name. For example, after configu
 /preset save openai
 ```
 
-Delete the `openai` entry from `model-presets.json` to restore the shipped preset. Preset names may contain lowercase letters, numbers, `.`, `_`, and `-`; `list`, `current`, and `save` are reserved.
+Delete the `openai` entry from `model-presets.json` to restore the shipped preset. Preset names may contain lowercase letters, numbers, `.`, `_`, and `-`; `default`, `list`, `current`, and `save` are reserved.
+
+## OMP system defaults
+
+Use OMP's own system role mapping instead of any named preset:
+
+```text
+/preset default
+```
+
+This runs `omp config reset modelRoles` and reloads the session so subsequent role resolution uses OMP's system defaults. It does not delete your custom preset file. Project settings and command-line configuration overlays still take precedence according to OMP's normal configuration rules.
 
 ## What it changes
 
@@ -78,8 +97,9 @@ Every push and pull request to `main` runs the Node.js test suite and checks the
 To publish, update `package.json` to the next version, commit it, then push the matching tag:
 
 ```sh
-git tag v0.2.0
-git push origin v0.2.0
+version=$(node -p "require('./package.json').version")
+git tag "v$version"
+git push origin "v$version"
 ```
 
 The tag workflow rejects mismatched versions and publishes the package to npm with provenance.
