@@ -1,5 +1,5 @@
-import { readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 const BUILT_IN_PRESETS = {
   anthropic: {
@@ -91,7 +91,8 @@ async function presetStorage(pi, cwd) {
   const agentDir = await runOmp(pi, ["config", "path"], cwd, "Could not find the OMP config directory");
   return {
     presetsFile: join(agentDir, "model-presets.json"),
-    activeFile: join(agentDir, "model-presets.active"),
+    globalActiveFile: join(agentDir, "model-presets.active"),
+    projectActiveFile: join(cwd, ".omp", "model-presets.active"),
   };
 }
 
@@ -126,19 +127,164 @@ async function readActivePreset(file) {
 }
 
 async function setActivePreset(file, name) {
-  if (name) await writeFile(file, `${name}\n`, "utf8");
-  else await rm(file, { force: true });
+  if (name) {
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, `${name}\n`, "utf8");
+  } else {
+    await rm(file, { force: true });
+  }
 }
 
-async function syncActivePreset(pi, cwd, storage) {
-  const active = await readActivePreset(storage.activeFile);
-  if (!active) return undefined;
-  const roles = await readConfiguredRoles(pi, cwd);
-  validatePreset(active, roles);
+const SCOPES = new Set(["global", "project", "session"]);
+const SESSION_STATE_TYPE = "model-presets.active";
+
+function parseCommand(args) {
+  const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let scope = "global";
+  const scopeFlag = words.indexOf("--scope");
+  if (scopeFlag !== -1) {
+    if (scopeFlag !== words.length - 2 || !SCOPES.has(words[scopeFlag + 1])) {
+      throw new Error("Usage: /preset <name> [--scope global|project|session]");
+    }
+    scope = words[scopeFlag + 1];
+    words.splice(scopeFlag, 2);
+  }
+  return { action: words[0] ?? "list", rest: words.slice(1), scope };
+}
+
+function roleMap(value) {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(([, spec]) => typeof spec === "string" && spec.trim()),
+  );
+}
+
+function settingsFor(pi) {
+  const settings = pi.pi?.settings;
+  if (!settings) throw new Error("This OMP version does not expose scoped settings");
+  return settings;
+}
+
+function sessionState(ctx) {
+  const entries = ctx.sessionManager.getBranch();
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (entry.type !== "custom" || entry.customType !== SESSION_STATE_TYPE || !isRecord(entry.data)) continue;
+    const { name, base } = entry.data;
+    if (name !== null && typeof name !== "string") continue;
+    return { name, base: roleMap(base) };
+  }
+  return undefined;
+}
+
+function setSessionState(pi, name, base) {
+  pi.appendEntry(SESSION_STATE_TYPE, { name, base });
+}
+
+function activeFile(storage, scope) {
+  return scope === "project" ? storage.projectActiveFile : storage.globalActiveFile;
+}
+
+function rolesForScope(settings, scope) {
+  if (scope === "session") return settings.getModelRoles();
+  const layer = scope === "project" ? settings.getProjectSettings() : settings.getGlobalSettings();
+  return roleMap(layer.modelRoles);
+}
+
+async function syncPreset(pi, ctx, storage, scope, name) {
+  const roles = rolesForScope(settingsFor(pi), scope);
+  validatePreset(name, roles);
   const custom = await readCustomPresets(storage.presetsFile);
-  custom[active] = roles;
+  custom[name] = roles;
   await writeCustomPresets(storage.presetsFile, custom);
-  return roles;
+}
+
+async function syncActivePreset(pi, ctx, storage) {
+  const session = sessionState(ctx);
+  if (session?.name) {
+    await syncPreset(pi, ctx, storage, "session", session.name);
+    return;
+  }
+  const project = await readActivePreset(storage.projectActiveFile);
+  if (project) {
+    await syncPreset(pi, ctx, storage, "project", project);
+    return;
+  }
+  const global = await readActivePreset(storage.globalActiveFile);
+  if (global) await syncPreset(pi, ctx, storage, "global", global);
+}
+
+function runtimeBase(settings, current) {
+  if (current) return current.base;
+  return Object.fromEntries(
+    Object.entries(settings.getModelRoles())
+      .filter(([role]) => settings.getModelRoleProvenance(role) === "runtime"),
+  );
+}
+
+function applySessionRoles(settings, preset, base) {
+  settings.clearOverride("modelRoles");
+  settings.overrideModelRoles(base);
+  settings.overrideModelRoles(preset);
+}
+
+async function setScopedRoles(pi, ctx, scope, preset, name) {
+  const settings = settingsFor(pi);
+  if (scope === "global") {
+    settings.set("modelRoles", preset);
+    await settings.flush();
+    return;
+  }
+  if (scope === "project") {
+    const current = roleMap(settings.getProjectSettings().modelRoles);
+    for (const role of Object.keys(current)) {
+      if (!Object.hasOwn(preset, role)) settings.clearProjectModelRole(role);
+    }
+    for (const [role, spec] of Object.entries(preset)) settings.setProjectModelRole(role, spec);
+    await settings.flush();
+    return;
+  }
+  const current = sessionState(ctx);
+  const base = runtimeBase(settings, current);
+  applySessionRoles(settings, preset, base);
+  setSessionState(pi, name, base);
+}
+
+async function resetScope(pi, ctx, storage, scope) {
+  const settings = settingsFor(pi);
+  if (scope === "global") {
+    settings.set("modelRoles", {});
+    await settings.flush();
+    await setActivePreset(storage.globalActiveFile);
+    return;
+  }
+  if (scope === "project") {
+    for (const role of Object.keys(roleMap(settings.getProjectSettings().modelRoles))) {
+      settings.clearProjectModelRole(role);
+    }
+    await settings.flush();
+    await setActivePreset(storage.projectActiveFile);
+    return;
+  }
+  const current = sessionState(ctx);
+  const base = runtimeBase(settings, current);
+  applySessionRoles(settings, {}, base);
+  setSessionState(pi, null, base);
+}
+
+async function restoreSessionPreset(pi, ctx) {
+  const current = sessionState(ctx);
+  if (!current) return;
+  const settings = settingsFor(pi);
+  if (current.name === null) {
+    applySessionRoles(settings, {}, current.base);
+    return;
+  }
+  const storage = await presetStorage(pi, ctx.cwd);
+  const presets = availablePresets(await readCustomPresets(storage.presetsFile));
+  const preset = presets[current.name];
+  if (!preset) throw new Error(`Session preset '${current.name}' no longer exists`);
+  applySessionRoles(settings, preset, current.base);
 }
 
 function availablePresets(custom) {
@@ -148,25 +294,28 @@ function availablePresets(custom) {
 export default function modelPresets(pi) {
   pi.setLabel("Model Presets");
 
-  pi.registerCommand("preset", {
-    description: "Switch, list, inspect, or create complete model-role presets",
-    handler: async (args, ctx) => {
-      const input = args.trim().toLowerCase();
-      const [action, ...rest] = input ? input.split(/\s+/) : ["list"];
+  for (const event of ["session_start", "session_switch", "session_branch", "session_tree"]) {
+    pi.on(event, async (_event, ctx) => restoreSessionPreset(pi, ctx));
+  }
 
+  pi.registerCommand("preset", {
+    description: "Switch, list, inspect, or create scoped model-role presets",
+    handler: async (args, ctx) => {
       try {
+        const { action, rest, scope } = parseCommand(args);
         const storage = await presetStorage(pi, ctx.cwd);
+        const settings = settingsFor(pi);
 
         if (action === "new") {
           const name = rest.join(" ");
-          if (!name) throw new Error("Usage: /preset new <name>");
+          if (!name) throw new Error("Usage: /preset new <name> [--scope global|project|session]");
           validatePresetName(name);
           if (["default", "list", "current", "new"].includes(name)) {
             throw new Error(`'${name}' is reserved and cannot be used as a preset name`);
           }
 
-          const roles = await syncActivePreset(pi, ctx.cwd, storage)
-            ?? await readConfiguredRoles(pi, ctx.cwd);
+          await syncActivePreset(pi, ctx, storage);
+          const roles = settings.getModelRoles();
           const custom = await readCustomPresets(storage.presetsFile);
           if (Object.hasOwn(availablePresets(custom), name)) {
             throw new Error(`Preset '${name}' already exists`);
@@ -174,21 +323,19 @@ export default function modelPresets(pi) {
           validatePreset(name, roles);
           custom[name] = roles;
           await writeCustomPresets(storage.presetsFile, custom);
-          await setActivePreset(storage.activeFile, name);
-          ctx.ui.notify(`Preset '${name}' created and selected`, "info");
+          await setScopedRoles(pi, ctx, scope, roles, name);
+          if (scope !== "session") await setActivePreset(activeFile(storage, scope), name);
+          ctx.ui.notify(`Preset '${name}' created and selected for ${scope} scope`, "info");
+          await ctx.reload();
           return;
         }
 
+        if (rest.length > 0) throw new Error("Usage: /preset <name> [--scope global|project|session]");
+
         if (action === "default") {
-          await syncActivePreset(pi, ctx.cwd, storage);
-          await runOmp(
-            pi,
-            ["config", "reset", "modelRoles"],
-            ctx.cwd,
-            "Could not restore the default modelRoles",
-          );
-          await setActivePreset(storage.activeFile);
-          ctx.ui.notify("OMP's default model roles restored", "info");
+          await syncActivePreset(pi, ctx, storage);
+          await resetScope(pi, ctx, storage, scope);
+          ctx.ui.notify(`Default model roles restored for ${scope} scope`, "info");
           await ctx.reload();
           return;
         }
@@ -201,17 +348,26 @@ export default function modelPresets(pi) {
 
         if (action === "current") {
           const presets = availablePresets(await readCustomPresets(storage.presetsFile));
-          const roles = await readConfiguredRoles(pi, ctx.cwd);
-          const active = await readActivePreset(storage.activeFile);
-          const current = active
-            ?? (Object.keys(roles).length === 0 ? "default" : matchingPreset(roles, presets));
-          ctx.ui.notify(current ? `Current preset: ${current}` : "Current preset: custom", "info");
+          const session = sessionState(ctx)?.name;
+          const project = await readActivePreset(storage.projectActiveFile);
+          const global = await readActivePreset(storage.globalActiveFile);
+          const active = [
+            session && `session=${session}`,
+            project && `project=${project}`,
+            global && `global=${global}`,
+          ].filter(Boolean);
+          if (active.length > 0) {
+            ctx.ui.notify(`Active presets: ${active.join(", ")}; effective: ${active[0]}`, "info");
+          } else {
+            const roles = settings.getModelRoles();
+            const current = Object.keys(roles).length === 0 ? "default" : matchingPreset(roles, presets);
+            ctx.ui.notify(current ? `Current preset: ${current}` : "Current preset: custom", "info");
+          }
           return;
         }
 
-        await syncActivePreset(pi, ctx.cwd, storage);
-        const custom = await readCustomPresets(storage.presetsFile);
-        const presets = availablePresets(custom);
+        await syncActivePreset(pi, ctx, storage);
+        const presets = availablePresets(await readCustomPresets(storage.presetsFile));
         const preset = Object.hasOwn(presets, action) ? presets[action] : undefined;
         if (!preset) {
           ctx.ui.notify(
@@ -232,20 +388,17 @@ export default function modelPresets(pi) {
           resolved.set(role, { ...parsed, model });
         }
 
-        await runOmp(
-          pi,
-          ["config", "set", "modelRoles", JSON.stringify(preset)],
-          ctx.cwd,
-          "Could not save modelRoles",
-        );
-        await setActivePreset(storage.activeFile, action);
+        await setScopedRoles(pi, ctx, scope, preset, action);
+        if (scope !== "session") await setActivePreset(activeFile(storage, scope), action);
 
-        const selected = resolved.get("default");
-        if (selected) {
-          await pi.setModel(selected.model);
-          if (selected.thinking) pi.setThinkingLevel(selected.thinking);
+        if (settings.getModelRoles().default === preset.default) {
+          const selected = resolved.get("default");
+          if (selected) {
+            await pi.setModel(selected.model);
+            if (selected.thinking) pi.setThinkingLevel(selected.thinking);
+          }
         }
-        ctx.ui.notify(`Preset '${action}' applied to ${resolved.size} roles`, "info");
+        ctx.ui.notify(`Preset '${action}' applied to ${resolved.size} roles for ${scope} scope`, "info");
         await ctx.reload();
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");

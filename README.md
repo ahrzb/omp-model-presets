@@ -8,39 +8,57 @@ Switch every [Oh My Pi](https://github.com/can1357/oh-my-pi) model role between 
 omp plugin install @ahrzb/omp-model-presets
 ```
 
-Restart OMP, then choose a preset:
+Restart OMP, then choose a preset globally (the backward-compatible default), for the current project, or only for the current session:
 
 ```text
 /preset openai
-/preset anthropic
+/preset anthropic --scope project
+/preset openai --scope session
 ```
 
 ## Commands
 
 | Command | Description |
 | --- | --- |
-| `/preset openai` | Assign every OMP model role to the OpenAI Codex preset. |
-| `/preset anthropic` | Assign every OMP model role to the Anthropic Claude preset. |
-| `/preset default` | Restore OMP's system-default `modelRoles` instead of using a named preset. |
-| `/preset current` | Show the matching preset, or `custom` when roles differ. |
+| `/preset <name> [--scope global\|project\|session]` | Apply a preset at the selected scope. The default scope is `global`. |
+| `/preset default [--scope global\|project\|session]` | Clear the selected scope so the next lower-precedence OMP configuration applies. |
+| `/preset current` | Show active presets by scope and the effective preset. |
 | `/preset list` | List available presets. |
-| `/preset new <name>` | Create and select a preset from the current complete `modelRoles` mapping. |
+| `/preset new <name> [--scope global\|project\|session]` | Create a preset from the effective `modelRoles` mapping and select it at that scope. |
+
+## Scopes
+
+Scopes follow OMP's normal precedence:
+
+```text
+session > project > global > OMP defaults
+```
+
+| Scope | Behavior |
+| --- | --- |
+| `global` | Persists `modelRoles` in the active OMP profile's `config.yml` and applies everywhere without a higher-precedence override. This remains the default when `--scope` is omitted. |
+| `project` | Persists `modelRoles` in `<cwd>/.omp/config.yml`. It affects OMP sessions started in that exact working directory. |
+| `session` | Stores an in-memory role override and a marker in the OMP session transcript. It survives reload/resume of that session but does not modify global or project configuration. |
+
+Setting or clearing one scope does not delete another scope. For example, a session preset continues to take precedence if you change the global preset underneath it.
 
 ## Custom presets
 
-Create a preset from the roles currently stored by OMP:
+Create and select a preset from the effective roles currently used by OMP:
 
 ```text
 /preset new work
+/preset new review --scope project
+/preset new experiment --scope session
 ```
 
-The new preset becomes active. Continue changing roles through OMP's normal settings UI; those changes remain persisted in OMP's `config.yml`. Before you switch to another preset, create another preset, or run `/preset default`, the plugin copies the current `modelRoles` back into the active preset automatically.
+The new preset becomes active at the requested scope. Continue changing roles through OMP's normal model settings; before you switch to another preset, create another preset, or clear a scope with `/preset default`, the plugin copies the current roles from the effective active scope back into that preset automatically.
 
 This also makes the built-in presets customizable. Select `openai`, change its roles in OMP settings, then switch away. The modified roles are stored as a custom `openai` override. To restore the shipped `openai` preset, switch away from it and delete its entry from `model-presets.json`.
 
 ### File location
 
-All file-backed presets live in one `model-presets.json` file in the active OMP agent directory:
+Preset definitions are shared across scopes and live in one `model-presets.json` file in the active OMP agent directory:
 
 - Windows: `%USERPROFILE%\.omp\agent\model-presets.json`
 - macOS and Linux: `~/.omp/agent/model-presets.json`
@@ -54,23 +72,27 @@ omp config path
 
 Append `model-presets.json` to that path. The file contains one top-level JSON property per preset. You can place an existing preset file there or let `/preset new <name>` create it.
 
+The active global preset is tracked beside it in `model-presets.active`. The active project preset is tracked in `<cwd>/.omp/model-presets.active`. Session state is recorded in the OMP session transcript rather than a separate file.
+
 Model strings use OMP's `provider/model:thinking-level` format. Custom presets override built-ins with the same name. Preset names may contain lowercase letters, numbers, `.`, `_`, and `-`; `default`, `list`, `current`, and `new` are reserved.
 
 ## OMP system defaults
 
-Use OMP's own system role mapping instead of any named preset:
+Clear a scope with the same `--scope` syntax:
 
 ```text
 /preset default
+/preset default --scope project
+/preset default --scope session
 ```
 
-The plugin first saves any pending settings changes to the active preset, then runs `omp config reset modelRoles` and reloads the session so subsequent role resolution uses OMP's system defaults. It does not delete your custom preset file. Project settings and command-line configuration overlays still take precedence according to OMP's normal configuration rules.
+The plugin first saves pending settings changes to the effective active preset. Global default writes an empty global `modelRoles` mapping, project default clears project role overrides so global roles apply, and session default removes the session override so project or global roles apply. Preset definitions are not deleted.
 
 ## What it changes
 
-The plugin replaces the complete persistent `modelRoles` mapping, including `default`, `slow`, `smol`, `plan`, `advisor`, `task`, `designer`, `vision`, `commit`, `tiny`, and `spark`.
+The plugin replaces the complete `modelRoles` mapping at the selected scope, including `default`, `slow`, `smol`, `plan`, `advisor`, `task`, `designer`, `vision`, `commit`, `tiny`, and `spark`.
 
-Before writing the configuration, it verifies that every preset model resolves in OMP. It then switches the active model immediately and reloads OMP so agents and role-based tasks use the selected provider.
+Before applying a preset, it verifies that every model resolves in OMP. When the selected scope becomes effective, it switches the active model immediately and reloads OMP so agents and role-based tasks use the selected provider.
 
 Your provider credentials and access to the configured models must already be available in OMP.
 

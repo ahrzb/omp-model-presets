@@ -6,52 +6,91 @@ import test from "node:test";
 
 import modelPresets from "../index.js";
 
-test("active presets retain OMP setting changes before switching", async (t) => {
-  const agentDir = await mkdtemp(join(tmpdir(), "omp-model-presets-"));
-  t.after(() => rm(agentDir, { recursive: true, force: true }));
+function createSettings(globalRoles = {}) {
+  let global = { ...globalRoles };
+  const project = {};
+  let runtime = {};
 
-  const initialRoles = {
-    default: "custom/default:high",
-    task: "custom/task:low",
+  return {
+    getModelRoles() {
+      return {
+        ...global,
+        ...Object.fromEntries(Object.entries(project).filter(([, value]) => typeof value === "string")),
+        ...runtime,
+      };
+    },
+    getGlobalSettings() {
+      return { modelRoles: { ...global } };
+    },
+    getProjectSettings() {
+      return { modelRoles: { ...project } };
+    },
+    getModelRoleProvenance(role) {
+      if (Object.hasOwn(runtime, role)) return "runtime";
+      if (typeof project[role] === "string") return "project";
+      if (Object.hasOwn(global, role)) return "global";
+      return "default";
+    },
+    set(path, value) {
+      assert.equal(path, "modelRoles");
+      global = { ...value };
+    },
+    setProjectModelRole(role, value) {
+      project[role] = value;
+    },
+    clearProjectModelRole(role) {
+      project[role] = null;
+    },
+    override(path, value) {
+      assert.equal(path, "modelRoles");
+      runtime = { ...value };
+    },
+    overrideModelRoles(value) {
+      runtime = { ...runtime, ...value };
+    },
+    clearOverride(path) {
+      assert.equal(path, "modelRoles");
+      runtime = {};
+    },
+    async flush() {},
+    layers() {
+      return { global, project, runtime };
+    },
   };
-  const editedRoles = {
-    default: "other/model:medium",
-    task: "other/task:low",
-  };
-  let currentRoles = initialRoles;
+}
+
+test("presets apply independently to global, project, and session scopes", async (t) => {
+  const agentDir = await mkdtemp(join(tmpdir(), "omp-model-presets-agent-"));
+  const cwd = await mkdtemp(join(tmpdir(), "omp-model-presets-project-"));
+  t.after(() => Promise.all([
+    rm(agentDir, { recursive: true, force: true }),
+    rm(cwd, { recursive: true, force: true }),
+  ]));
+
+  const settings = createSettings();
+  const entries = [];
+  const events = new Map();
+  const notifications = [];
   let handler;
-  let appliedRoles;
   let selectedModel;
   let thinkingLevel;
   let reloads = 0;
-  let resets = 0;
-  const notifications = [];
 
   const pi = {
+    pi: { settings },
     setLabel() {},
+    on(event, callback) {
+      events.set(event, callback);
+    },
     registerCommand(_name, command) {
       handler = command.handler;
+    },
+    appendEntry(customType, data) {
+      entries.push({ type: "custom", customType, data });
     },
     async exec(_command, args) {
       if (args[0] === "config" && args[1] === "path") {
         return { code: 0, stdout: agentDir, stderr: "" };
-      }
-      if (args[0] === "config" && args[1] === "get") {
-        return {
-          code: 0,
-          stdout: JSON.stringify({ value: currentRoles }),
-          stderr: "",
-        };
-      }
-      if (args[0] === "config" && args[1] === "reset") {
-        currentRoles = {};
-        resets += 1;
-        return { code: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "config" && args[1] === "set") {
-        appliedRoles = JSON.parse(args[3]);
-        currentRoles = appliedRoles;
-        return { code: 0, stdout: "", stderr: "" };
       }
       throw new Error(`Unexpected omp invocation: ${args.join(" ")}`);
     },
@@ -63,7 +102,12 @@ test("active presets retain OMP setting changes before switching", async (t) => 
     },
   };
   const ctx = {
-    cwd: agentDir,
+    cwd,
+    sessionManager: {
+      getBranch() {
+        return entries;
+      },
+    },
     ui: {
       notify(message, level) {
         notifications.push({ message, level });
@@ -80,36 +124,50 @@ test("active presets retain OMP setting changes before switching", async (t) => 
   };
 
   modelPresets(pi);
-  await handler("new work", ctx);
 
-  assert.deepEqual(
-    JSON.parse(await readFile(join(agentDir, "model-presets.json"), "utf8")),
-    { work: initialRoles },
+  await handler("openai", ctx);
+  assert.match(settings.layers().global.default, /^openai-codex\//);
+  assert.equal(await readFile(join(agentDir, "model-presets.active"), "utf8"), "openai\n");
+
+  await handler("anthropic --scope project", ctx);
+  assert.match(settings.layers().project.default, /^anthropic\//);
+  assert.equal(
+    await readFile(join(cwd, ".omp", "model-presets.active"), "utf8"),
+    "anthropic\n",
   );
-  assert.equal(await readFile(join(agentDir, "model-presets.active"), "utf8"), "work\n");
+  assert.match(settings.getModelRoles().default, /^anthropic\//);
 
-  currentRoles = editedRoles;
-  await handler("anthropic", ctx);
+  await handler("openai --scope session", ctx);
+  assert.match(settings.layers().runtime.default, /^openai-codex\//);
+  assert.equal(entries.at(-1).data.name, "openai");
+  assert.match(settings.getModelRoles().default, /^openai-codex\//);
 
-  assert.deepEqual(
-    JSON.parse(await readFile(join(agentDir, "model-presets.json"), "utf8")).work,
-    editedRoles,
-  );
+  settings.clearOverride("modelRoles");
+  await events.get("session_start")({ type: "session_start" }, ctx);
+  assert.match(settings.layers().runtime.default, /^openai-codex\//);
 
-  await handler("work", ctx);
+  await handler("current", ctx);
+  assert.match(notifications.at(-1).message, /session=openai.*project=anthropic.*global=openai/);
 
-  assert.deepEqual(appliedRoles, editedRoles);
-  assert.deepEqual(selectedModel, { id: "other/model" });
-  assert.equal(thinkingLevel, "medium");
-  assert.equal(await readFile(join(agentDir, "model-presets.active"), "utf8"), "work\n");
-  assert.equal(reloads, 2);
+  await handler("default --scope session", ctx);
+  assert.equal(entries.at(-1).data.name, null);
+  assert.deepEqual(settings.layers().runtime, {});
+  assert.match(settings.getModelRoles().default, /^anthropic\//);
+
+  await handler("default --scope project", ctx);
+  assert.match(settings.getModelRoles().default, /^openai-codex\//);
+  await assert.rejects(readFile(join(cwd, ".omp", "model-presets.active"), "utf8"), {
+    code: "ENOENT",
+  });
 
   await handler("default", ctx);
-
-  assert.equal(resets, 1);
+  assert.deepEqual(settings.getModelRoles(), {});
   await assert.rejects(readFile(join(agentDir, "model-presets.active"), "utf8"), {
     code: "ENOENT",
   });
-  assert.equal(reloads, 3);
-  assert.deepEqual(notifications.map(({ level }) => level), ["info", "info", "info", "info"]);
+
+  assert.equal(reloads, 6);
+  assert.deepEqual(selectedModel, { id: "openai-codex/gpt-6-astra" });
+  assert.equal(thinkingLevel, "high");
+  assert.ok(notifications.every(({ level }) => level === "info"));
 });
