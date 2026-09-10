@@ -1,8 +1,30 @@
 {
   "name": "@ahrzb/omp-model-presets",
-  "version": "0.1.0",
-  "description": "Switch all Oh My Pi model roles between provider presets",
+  "version": "0.1.1",
+  "description": "Oh My Pi (OMP) plugin that switches every model role between OpenAI Codex and Anthropic Claude presets",
   "license": "MIT",
+  "author": "ahrzb",
+  "type": "module",
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "omp-plugin",
+    "model-presets",
+    "openai",
+    "codex",
+    "anthropic",
+    "claude",
+    "ai-agent",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ahrzb/omp-model-presets.git"
+  },
+  "homepage": "https://github.com/ahrzb/omp-model-presets#readme",
+  "bugs": {
+    "url": "https://github.com/ahrzb/omp-model-presets/issues"
+  },
   "files": ["index.js"],
   "publishConfig": {
     "access": "public"
