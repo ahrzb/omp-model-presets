@@ -25,5 +25,3 @@ jobs:
           expected=v$(node -p "require('./package.json').version")
           test "$expected" = "$GITHUB_REF_NAME"
       - run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_CI_TOKEN }}
