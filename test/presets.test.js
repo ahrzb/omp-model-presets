@@ -149,6 +149,15 @@ test("presets apply independently to global, project, and session scopes", async
   await handler("current", ctx);
   assert.match(notifications.at(-1).message, /session=openai.*project=anthropic.*global=openai/);
 
+  const activeSessionEntries = entries.splice(0);
+  await events.get("session_switch")({ type: "session_switch" }, ctx);
+  assert.deepEqual(settings.layers().runtime, {});
+  assert.match(settings.getModelRoles().default, /^anthropic\//);
+
+  entries.push(...activeSessionEntries);
+  await events.get("session_switch")({ type: "session_switch" }, ctx);
+  assert.match(settings.layers().runtime.default, /^openai-codex\//);
+
   await handler("default --scope session", ctx);
   assert.equal(entries.at(-1).data.name, null);
   assert.deepEqual(settings.layers().runtime, {});

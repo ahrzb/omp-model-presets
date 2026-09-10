@@ -38,7 +38,7 @@ session > project > global > OMP defaults
 | --- | --- |
 | `global` | Persists `modelRoles` in the active OMP profile's `config.yml` and applies everywhere without a higher-precedence override. This remains the default when `--scope` is omitted. |
 | `project` | Persists `modelRoles` in `<cwd>/.omp/config.yml`. It affects OMP sessions started in that exact working directory. |
-| `session` | Stores an in-memory role override and a marker in the OMP session transcript. It survives reload/resume of that session but does not modify global or project configuration. |
+| `session` | Stores an in-memory role override and a marker in the OMP session transcript. It follows a persisted session across reload/resume but does not modify global or project configuration. |
 
 Setting or clearing one scope does not delete another scope. For example, a session preset continues to take precedence if you change the global preset underneath it.
 

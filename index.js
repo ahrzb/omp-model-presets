@@ -228,7 +228,7 @@ function applySessionRoles(settings, preset, base) {
   settings.overrideModelRoles(preset);
 }
 
-async function setScopedRoles(pi, ctx, scope, preset, name) {
+async function setScopedRoles(pi, ctx, scope, preset, name, runtimeState) {
   const settings = settingsFor(pi);
   if (scope === "global") {
     settings.set("modelRoles", preset);
@@ -247,10 +247,11 @@ async function setScopedRoles(pi, ctx, scope, preset, name) {
   const current = sessionState(ctx);
   const base = runtimeBase(settings, current);
   applySessionRoles(settings, preset, base);
+  runtimeState.base = base;
   setSessionState(pi, name, base);
 }
 
-async function resetScope(pi, ctx, storage, scope) {
+async function resetScope(pi, ctx, storage, scope, runtimeState) {
   const settings = settingsFor(pi);
   if (scope === "global") {
     settings.set("modelRoles", {});
@@ -269,15 +270,21 @@ async function resetScope(pi, ctx, storage, scope) {
   const current = sessionState(ctx);
   const base = runtimeBase(settings, current);
   applySessionRoles(settings, {}, base);
+  runtimeState.base = undefined;
   setSessionState(pi, null, base);
 }
 
-async function restoreSessionPreset(pi, ctx) {
+async function restoreSessionPreset(pi, ctx, runtimeState) {
   const current = sessionState(ctx);
-  if (!current) return;
   const settings = settingsFor(pi);
+  if (!current) {
+    if (runtimeState.base !== undefined) applySessionRoles(settings, {}, runtimeState.base);
+    runtimeState.base = undefined;
+    return;
+  }
   if (current.name === null) {
     applySessionRoles(settings, {}, current.base);
+    runtimeState.base = undefined;
     return;
   }
   const storage = await presetStorage(pi, ctx.cwd);
@@ -285,6 +292,7 @@ async function restoreSessionPreset(pi, ctx) {
   const preset = presets[current.name];
   if (!preset) throw new Error(`Session preset '${current.name}' no longer exists`);
   applySessionRoles(settings, preset, current.base);
+  runtimeState.base = current.base;
 }
 
 function availablePresets(custom) {
@@ -293,9 +301,10 @@ function availablePresets(custom) {
 
 export default function modelPresets(pi) {
   pi.setLabel("Model Presets");
+  const runtimeState = { base: undefined };
 
   for (const event of ["session_start", "session_switch", "session_branch", "session_tree"]) {
-    pi.on(event, async (_event, ctx) => restoreSessionPreset(pi, ctx));
+    pi.on(event, async (_event, ctx) => restoreSessionPreset(pi, ctx, runtimeState));
   }
 
   pi.registerCommand("preset", {
@@ -323,7 +332,7 @@ export default function modelPresets(pi) {
           validatePreset(name, roles);
           custom[name] = roles;
           await writeCustomPresets(storage.presetsFile, custom);
-          await setScopedRoles(pi, ctx, scope, roles, name);
+          await setScopedRoles(pi, ctx, scope, roles, name, runtimeState);
           if (scope !== "session") await setActivePreset(activeFile(storage, scope), name);
           ctx.ui.notify(`Preset '${name}' created and selected for ${scope} scope`, "info");
           await ctx.reload();
@@ -334,7 +343,7 @@ export default function modelPresets(pi) {
 
         if (action === "default") {
           await syncActivePreset(pi, ctx, storage);
-          await resetScope(pi, ctx, storage, scope);
+          await resetScope(pi, ctx, storage, scope, runtimeState);
           ctx.ui.notify(`Default model roles restored for ${scope} scope`, "info");
           await ctx.reload();
           return;
@@ -388,7 +397,7 @@ export default function modelPresets(pi) {
           resolved.set(role, { ...parsed, model });
         }
 
-        await setScopedRoles(pi, ctx, scope, preset, action);
+        await setScopedRoles(pi, ctx, scope, preset, action, runtimeState);
         if (scope !== "session") await setActivePreset(activeFile(storage, scope), action);
 
         if (settings.getModelRoles().default === preset.default) {
