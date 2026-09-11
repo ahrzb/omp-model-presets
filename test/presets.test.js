@@ -254,3 +254,59 @@ test("presets apply independently to global, project, and session scopes", async
   assert.equal(thinkingLevel, "high");
   assert.ok(notifications.slice(0, -1).every(({ level }) => level === "info"));
 });
+
+test("default restores the pre-preset base configuration", async (t) => {
+  const agentDir = await mkdtemp(join(tmpdir(), "omp-base-agent-"));
+  const cwd = await mkdtemp(join(tmpdir(), "omp-base-project-"));
+  t.after(() => Promise.all([
+    rm(agentDir, { recursive: true, force: true }),
+    rm(cwd, { recursive: true, force: true }),
+  ]));
+
+  await writeFile(
+    join(agentDir, "model-presets.json"),
+    JSON.stringify({ openai: { default: "openai-codex/gpt-5.6-sol:high", smol: "openai-codex/gpt-5.6-luna:low" } }),
+    "utf8",
+  );
+
+  const base = { default: "anthropic/claude-sonnet-5:high", smol: "anthropic/claude-haiku-4-5:low" };
+  const settings = createSettings(base);
+  let handler;
+  let start;
+  let selectedModel;
+  const pi = {
+    pi: { settings },
+    setLabel() {},
+    on(event, cb) { if (event === "session_start") start = cb; },
+    registerCommand(_name, registered) { handler = registered.handler; },
+    appendEntry() {},
+    async exec(_command, args) {
+      if (args[0] === "config" && args[1] === "path") return { code: 0, stdout: agentDir, stderr: "" };
+      throw new Error(`Unexpected omp invocation: ${args.join(" ")}`);
+    },
+    async setModel(model) { selectedModel = model; },
+    setThinkingLevel() {},
+  };
+  const ctx = {
+    cwd,
+    sessionManager: { getBranch: () => [] },
+    ui: { notify() {}, addAutocompleteProvider() {} },
+    models: { resolve: (spec) => ({ id: spec }) },
+    async reload() {},
+  };
+
+  modelPresets(pi);
+  await start({ type: "session_start" }, ctx);
+
+  await handler("openai", ctx);
+  assert.match(settings.layers().global.default, /^openai-codex\//);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(agentDir, "model-presets.base.json"), "utf8")),
+    base,
+  );
+
+  await handler("default", ctx);
+  assert.deepEqual(settings.layers().global, base);
+  assert.deepEqual(selectedModel, { id: "anthropic/claude-sonnet-5" });
+  await assert.rejects(readFile(join(agentDir, "model-presets.base.json"), "utf8"), { code: "ENOENT" });
+});

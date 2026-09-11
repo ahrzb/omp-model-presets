@@ -80,9 +80,9 @@ The active global preset is tracked beside it in `model-presets.active`. The act
 
 Model strings use OMP's `provider/model:thinking-level` format. Preset names may contain lowercase letters, numbers, `.`, `_`, and `-`; `default`, `list`, `current`, `new`, `delete`, and `rm` are reserved.
 
-## OMP system defaults
+## Returning to your base config
 
-Clear a scope with the same `--scope` syntax:
+Switching presets is meant to feel like pointing at a different config file, so `/preset default` restores the configuration you had before you first applied a preset — not an empty mapping.
 
 ```text
 /preset default
@@ -90,7 +90,7 @@ Clear a scope with the same `--scope` syntax:
 /preset default --scope session
 ```
 
-The plugin first saves pending settings changes to the effective active preset. Global default writes an empty global `modelRoles` mapping, project default clears project role overrides so global roles apply, and session default removes the session override so project or global roles apply. Preset definitions are not deleted.
+The first time a preset is applied to the global or project scope, the plugin snapshots that scope's existing `modelRoles` (a `model-presets.base.json` sidecar; the session scope keeps its snapshot in the transcript). `/preset default` writes that snapshot back, re-points the live model at the restored `default` role, and removes the snapshot — so the scope is exactly as it was before presets. If the scope had no roles to begin with, `default` clears it. Preset definitions are never deleted. Before restoring, the plugin first saves any pending role tweaks into the currently active preset.
 
 ## What it changes
 
