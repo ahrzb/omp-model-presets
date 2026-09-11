@@ -116,6 +116,7 @@ const ACTION_COMPLETIONS = [
   { name: "current", description: "Show active and effective presets" },
   { name: "list", description: "List available presets" },
   { name: "new", description: "Create a preset from current roles", hint: `<name> ${SCOPE_HINT}` },
+  { name: "delete", description: "Delete a preset", hint: "<name>" },
 ];
 
 function presetArgumentCompletions(argumentPrefix, presetNames) {
@@ -153,6 +154,13 @@ function presetArgumentCompletions(argumentPrefix, presetNames) {
         description,
         ...(hint ? { hint } : {}),
       }));
+    return matches.length > 0 ? matches : null;
+  }
+
+  if (words.length === 1 && (words[0] === "delete" || words[0] === "rm")) {
+    const matches = presetNames
+      .filter((name) => name.startsWith(prefix))
+      .map((name) => ({ value: `${words[0]} ${name} `, label: name, description: "Delete preset" }));
     return matches.length > 0 ? matches : null;
   }
 
@@ -203,6 +211,9 @@ function presetInlineHint(argumentText, presetNames) {
   if (action === "new") {
     if (words.length === 1) return `<name> ${SCOPE_HINT}`;
     return trailingSpace ? `--scope ${SCOPE_VALUE_HINT}` : ` ${SCOPE_HINT}`;
+  }
+  if (action === "delete" || action === "rm") {
+    return words.length === 1 ? "<name>" : null;
   }
   if (action === "current" || action === "list" || !presetNames.includes(action) && action !== "default") {
     return null;
@@ -430,7 +441,7 @@ export default function modelPresets(pi) {
           const name = rest.join(" ");
           if (!name) throw new Error("Usage: /preset new <name> [--scope global|project|session]");
           validatePresetName(name);
-          if (["default", "list", "current", "new"].includes(name)) {
+          if (["default", "list", "current", "new", "delete", "rm"].includes(name)) {
             throw new Error(`'${name}' is reserved and cannot be used as a preset name`);
           }
 
@@ -448,6 +459,39 @@ export default function modelPresets(pi) {
           if (scope !== "session") await setActivePreset(activeFile(storage, scope), name);
           ctx.ui.notify(`Preset '${name}' created and selected for ${scope} scope`, "info");
           await ctx.reload();
+          return;
+        }
+
+        if (action === "delete" || action === "rm") {
+          const name = rest.join(" ");
+          if (!name) throw new Error("Usage: /preset delete <name>");
+          validatePresetName(name);
+          const custom = await readCustomPresets(storage.presetsFile);
+          if (!Object.hasOwn(custom, name)) throw new Error(`Preset '${name}' does not exist`);
+          delete custom[name];
+          await writeCustomPresets(storage.presetsFile, custom);
+          completionState.names = Object.keys(custom);
+
+          const cleared = [];
+          for (const [scopeName, file] of [
+            ["global", storage.globalActiveFile],
+            ["project", storage.projectActiveFile],
+          ]) {
+            if ((await readActivePreset(file)) === name) {
+              await setActivePreset(file);
+              cleared.push(scopeName);
+            }
+          }
+          const session = sessionState(ctx);
+          if (session?.name === name) {
+            setSessionState(pi, null, session.base);
+            cleared.push("session");
+          }
+
+          const suffix = cleared.length > 0
+            ? `; cleared its active selection for ${cleared.join(", ")} scope (roles unchanged)`
+            : "";
+          ctx.ui.notify(`Preset '${name}' deleted${suffix}`, "info");
           return;
         }
 

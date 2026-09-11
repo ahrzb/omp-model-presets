@@ -26,6 +26,7 @@ Restart OMP, then capture your current roles as a preset and switch between them
 | `/preset current` | Show active presets by scope and the effective preset. |
 | `/preset list` | List available presets. |
 | `/preset new <name> [--scope global\|project\|session]` | Create a preset from the effective `modelRoles` mapping and select it at that scope. |
+| `/preset delete <name>` | Delete a preset definition (alias: `/preset rm <name>`). Applied roles are left in place; only the definition and any active-selection markers pointing at it are removed. |
 
 Typing `/preset ` completes your preset names, actions, `--scope`, and scope values. The editor also shows contextual inline usage hints as you type.
 
@@ -77,7 +78,7 @@ Append `model-presets.json` to that path. The file contains one top-level JSON p
 
 The active global preset is tracked beside it in `model-presets.active`. The active project preset is tracked in `<cwd>/.omp/model-presets.active`. Session state is recorded in the OMP session transcript rather than a separate file.
 
-Model strings use OMP's `provider/model:thinking-level` format. Preset names may contain lowercase letters, numbers, `.`, `_`, and `-`; `default`, `list`, `current`, and `new` are reserved.
+Model strings use OMP's `provider/model:thinking-level` format. Preset names may contain lowercase letters, numbers, `.`, `_`, and `-`; `default`, `list`, `current`, `new`, `delete`, and `rm` are reserved.
 
 ## OMP system defaults
 

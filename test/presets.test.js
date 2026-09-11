@@ -232,7 +232,25 @@ test("presets apply independently to global, project, and session scopes", async
     code: "ENOENT",
   });
 
+  await handler("openai", ctx);
+  await handler("delete openai", ctx);
+  assert.match(notifications.at(-1).message, /Preset 'openai' deleted.*global scope/);
+  await assert.rejects(readFile(join(agentDir, "model-presets.active"), "utf8"), { code: "ENOENT" });
+  assert.ok(!Object.hasOwn(JSON.parse(await readFile(join(agentDir, "model-presets.json"), "utf8")), "openai"));
+  assert.deepEqual(
+    command.getArgumentCompletions("delete ").map(({ label }) => label).sort(),
+    ["anthropic", "work"],
+  );
+
+  await handler("rm work", ctx);
+  assert.equal(notifications.at(-1).message, "Preset 'work' deleted");
+  assert.equal(command.getArgumentCompletions("delete w"), null);
+
+  await handler("delete missing", ctx);
+  assert.equal(notifications.at(-1).level, "error");
+  assert.match(notifications.at(-1).message, /Preset 'missing' does not exist/);
+
   assert.deepEqual(selectedModel, { id: "openai-codex/gpt-5.6-sol" });
   assert.equal(thinkingLevel, "high");
-  assert.ok(notifications.every(({ level }) => level === "info"));
+  assert.ok(notifications.slice(0, -1).every(({ level }) => level === "info"));
 });
