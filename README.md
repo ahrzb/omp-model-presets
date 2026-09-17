@@ -8,6 +8,8 @@ Switch every [Oh My Pi](https://github.com/can1357/oh-my-pi) model role at once 
 omp plugin install @ahrzb/omp-model-presets
 ```
 
+OMP loads plugin code when the process starts. After installing or updating this package, close every running OMP process and start a new one before using `/preset`; `/reload` does not replace an already loaded plugin module.
+
 Restart OMP, then capture your current roles as a preset and switch between them for the current session (the default), globally, or for the current project:
 
 ```text
@@ -115,6 +117,8 @@ omp plugin doctor @ahrzb/omp-model-presets --json
 ```
 
 ## Releases
+
+See [CHANGELOG.md](CHANGELOG.md) for user-facing changes in each published version.
 
 Every push and pull request to `main` runs the Node.js test suite and checks the npm package contents.
 

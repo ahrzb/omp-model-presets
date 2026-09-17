@@ -1,6 +1,6 @@
 {
   "name": "@ahrzb/omp-model-presets",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Oh My Pi (OMP) plugin that switches every model role at once with scoped, user-defined presets",
   "license": "MIT",
   "author": "ahrzb",
@@ -28,7 +28,7 @@
   "bugs": {
     "url": "https://github.com/ahrzb/omp-model-presets/issues"
   },
-  "files": ["index.js"],
+  "files": ["index.js", "CHANGELOG.md"],
   "publishConfig": {
     "access": "public"
   },

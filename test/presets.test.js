@@ -192,13 +192,19 @@ test("presets apply independently to global, project, and session scopes", async
   assert.match(settings.getModelRoles().default, /^openai-codex\//);
 
   await handler("anthropic --scope session", ctx);
+  selectedModel = { id: "anthropic/claude-haiku-4-5" };
   settings.overrideModelRoles({ default: "manual/changed:high" });
   await handler("openai --scope session", ctx);
+  assert.deepEqual(selectedModel, { id: "openai-codex/gpt-5.6-sol" });
   const definitionsAfterSwitch = JSON.parse(
     await readFile(join(agentDir, "model-presets.json"), "utf8"),
   );
   assert.equal(definitionsAfterSwitch.openai.default, "openai-codex/gpt-5.6-sol:high");
   assert.equal(definitionsAfterSwitch.anthropic.default, "anthropic/claude-opus-5:high");
+  await handler("anthropic --scope session", ctx);
+  assert.deepEqual(selectedModel, { id: "anthropic/claude-opus-5" });
+  await handler("openai --scope session", ctx);
+  assert.deepEqual(selectedModel, { id: "openai-codex/gpt-5.6-sol" });
 
   settings.clearOverride("modelRoles");
   await events.get("session_start")({ type: "session_start" }, ctx);

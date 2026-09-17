@@ -1,5 +1,46 @@
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+
+const PACKAGE_FILE = new URL("./package.json", import.meta.url);
+
+function packageVersion(contents) {
+  const { version } = JSON.parse(contents);
+  return typeof version === "string" ? version : undefined;
+}
+
+// Captured while this module is being evaluated. OMP loads an extension module
+// once per process and `/reload` does not replace it, so a different version on
+// disk later means this process is still executing a stale copy — including its
+// preset write path. An upgrade that silently keeps the old writer running is
+// how preset definitions got overwritten after the write-back was removed.
+const LOADED_VERSION = (() => {
+  try {
+    return packageVersion(readFileSync(PACKAGE_FILE, "utf8"));
+  } catch {
+    return undefined;
+  }
+})();
+
+async function installedVersion() {
+  try {
+    return packageVersion(await readFile(PACKAGE_FILE, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+async function warnIfStaleModule(ctx, staleState) {
+  if (staleState.warned || !LOADED_VERSION) return;
+  const installed = await installedVersion();
+  if (!installed || installed === LOADED_VERSION) return;
+  staleState.warned = true;
+  ctx.ui.notify(
+    `Model Presets ${installed} is installed but this OMP process is still running ${LOADED_VERSION}.`
+    + " Restart OMP before using '/preset': the loaded copy can still overwrite preset definitions.",
+    "error",
+  );
+}
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]);
 
@@ -425,6 +466,7 @@ export default function modelPresets(pi) {
   pi.setLabel("Model Presets");
   const runtimeState = { base: undefined };
   const completionState = { names: [], hintsInstalled: false };
+  const staleState = { warned: false };
 
   for (const event of ["session_start", "session_switch", "session_branch", "session_tree"]) {
     pi.on(event, async (_event, ctx) => {
@@ -432,6 +474,7 @@ export default function modelPresets(pi) {
         installPresetInlineHints(ctx, completionState);
         completionState.hintsInstalled = true;
       }
+      await warnIfStaleModule(ctx, staleState);
       await restoreSessionPreset(pi, ctx, runtimeState);
       await refreshCompletionPresets(pi, ctx.cwd, completionState);
     });
