@@ -278,7 +278,7 @@ async function refreshCompletionPresets(pi, cwd, completionState) {
 
 function parseCommand(args) {
   const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  let scope = "global";
+  let scope = "session";
   const scopeFlag = words.indexOf("--scope");
   if (scopeFlag !== -1) {
     if (scopeFlag !== words.length - 2 || !SCOPES.has(words[scopeFlag + 1])) {
@@ -327,29 +327,6 @@ function rolesForScope(settings, scope) {
   if (scope === "session") return settings.getModelRoles();
   const layer = scope === "project" ? settings.getProjectSettings() : settings.getGlobalSettings();
   return roleMap(layer.modelRoles);
-}
-
-async function syncPreset(pi, ctx, storage, scope, name) {
-  const roles = rolesForScope(settingsFor(pi), scope);
-  validatePreset(name, roles);
-  const custom = await readCustomPresets(storage.presetsFile);
-  custom[name] = roles;
-  await writeCustomPresets(storage.presetsFile, custom);
-}
-
-async function syncActivePreset(pi, ctx, storage) {
-  const session = sessionState(ctx);
-  if (session?.name) {
-    await syncPreset(pi, ctx, storage, "session", session.name);
-    return;
-  }
-  const project = await readActivePreset(storage.projectActiveFile);
-  if (project) {
-    await syncPreset(pi, ctx, storage, "project", project);
-    return;
-  }
-  const global = await readActivePreset(storage.globalActiveFile);
-  if (global) await syncPreset(pi, ctx, storage, "global", global);
 }
 
 function runtimeBase(settings, current) {
@@ -478,7 +455,6 @@ export default function modelPresets(pi) {
             throw new Error(`'${name}' is reserved and cannot be used as a preset name`);
           }
 
-          await syncActivePreset(pi, ctx, storage);
           const roles = settings.getModelRoles();
           const custom = await readCustomPresets(storage.presetsFile);
           if (Object.hasOwn(custom, name)) {
@@ -531,7 +507,6 @@ export default function modelPresets(pi) {
         if (rest.length > 0) throw new Error("Usage: /preset <name> [--scope global|project|session]");
 
         if (action === "default") {
-          await syncActivePreset(pi, ctx, storage);
           await resetScope(pi, ctx, storage, scope, runtimeState);
           const restored = settings.getModelRoles().default;
           if (restored) {
@@ -579,7 +554,6 @@ export default function modelPresets(pi) {
           return;
         }
 
-        await syncActivePreset(pi, ctx, storage);
         const presets = await readCustomPresets(storage.presetsFile);
         const preset = Object.hasOwn(presets, action) ? presets[action] : undefined;
         if (!preset) {

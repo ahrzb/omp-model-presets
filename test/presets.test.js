@@ -164,6 +164,17 @@ test("presets apply independently to global, project, and session scopes", async
   );
 
   await handler("openai", ctx);
+  assert.match(settings.layers().runtime.default, /^openai-codex\//);
+  assert.equal(entries.at(-1).data.name, "openai");
+  await assert.rejects(readFile(join(agentDir, "model-presets.active"), "utf8"), {
+    code: "ENOENT",
+  });
+
+  await handler("default", ctx);
+  assert.deepEqual(settings.layers().runtime, {});
+  assert.equal(entries.at(-1).data.name, null);
+
+  await handler("openai --scope global", ctx);
   assert.match(settings.layers().global.default, /^openai-codex\//);
   assert.equal(await readFile(join(agentDir, "model-presets.active"), "utf8"), "openai\n");
 
@@ -179,6 +190,15 @@ test("presets apply independently to global, project, and session scopes", async
   assert.match(settings.layers().runtime.default, /^openai-codex\//);
   assert.equal(entries.at(-1).data.name, "openai");
   assert.match(settings.getModelRoles().default, /^openai-codex\//);
+
+  await handler("anthropic --scope session", ctx);
+  settings.overrideModelRoles({ default: "manual/changed:high" });
+  await handler("openai --scope session", ctx);
+  const definitionsAfterSwitch = JSON.parse(
+    await readFile(join(agentDir, "model-presets.json"), "utf8"),
+  );
+  assert.equal(definitionsAfterSwitch.openai.default, "openai-codex/gpt-5.6-sol:high");
+  assert.equal(definitionsAfterSwitch.anthropic.default, "anthropic/claude-opus-5:high");
 
   settings.clearOverride("modelRoles");
   await events.get("session_start")({ type: "session_start" }, ctx);
@@ -226,13 +246,13 @@ test("presets apply independently to global, project, and session scopes", async
     code: "ENOENT",
   });
 
-  await handler("default", ctx);
+  await handler("default --scope global", ctx);
   assert.deepEqual(settings.getModelRoles(), {});
   await assert.rejects(readFile(join(agentDir, "model-presets.active"), "utf8"), {
     code: "ENOENT",
   });
 
-  await handler("openai", ctx);
+  await handler("openai --scope global", ctx);
   await handler("delete openai", ctx);
   assert.match(notifications.at(-1).message, /Preset 'openai' deleted.*global scope/);
   await assert.rejects(readFile(join(agentDir, "model-presets.active"), "utf8"), { code: "ENOENT" });
@@ -298,14 +318,14 @@ test("default restores the pre-preset base configuration", async (t) => {
   modelPresets(pi);
   await start({ type: "session_start" }, ctx);
 
-  await handler("openai", ctx);
+  await handler("openai --scope global", ctx);
   assert.match(settings.layers().global.default, /^openai-codex\//);
   assert.deepEqual(
     JSON.parse(await readFile(join(agentDir, "model-presets.base.json"), "utf8")),
     base,
   );
 
-  await handler("default", ctx);
+  await handler("default --scope global", ctx);
   assert.deepEqual(settings.layers().global, base);
   assert.deepEqual(selectedModel, { id: "anthropic/claude-sonnet-5" });
   await assert.rejects(readFile(join(agentDir, "model-presets.base.json"), "utf8"), { code: "ENOENT" });

@@ -8,7 +8,7 @@ Switch every [Oh My Pi](https://github.com/can1357/oh-my-pi) model role at once 
 omp plugin install @ahrzb/omp-model-presets
 ```
 
-Restart OMP, then capture your current roles as a preset and switch between them globally (the default), for the current project, or only for the current session:
+Restart OMP, then capture your current roles as a preset and switch between them for the current session (the default), globally, or for the current project:
 
 ```text
 /preset new work
@@ -21,7 +21,7 @@ Restart OMP, then capture your current roles as a preset and switch between them
 
 | Command | Description |
 | --- | --- |
-| `/preset <name> [--scope global\|project\|session]` | Apply a preset at the selected scope. The default scope is `global`. |
+| `/preset <name> [--scope global\|project\|session]` | Apply a preset at the selected scope. The default scope is `session`. |
 | `/preset default [--scope global\|project\|session]` | Clear the selected scope so the next lower-precedence OMP configuration applies. |
 | `/preset current` | Show active presets by scope and the effective preset. |
 | `/preset list` | List available presets. |
@@ -40,9 +40,9 @@ session > project > global > OMP defaults
 
 | Scope | Behavior |
 | --- | --- |
-| `global` | Persists `modelRoles` in the active OMP profile's `config.yml` and applies everywhere without a higher-precedence override. This remains the default when `--scope` is omitted. |
+| `global` | Persists `modelRoles` in the active OMP profile's `config.yml` and applies everywhere without a higher-precedence override. |
 | `project` | Persists `modelRoles` in `<cwd>/.omp/config.yml`. It affects OMP sessions started in that exact working directory. |
-| `session` | Stores an in-memory role override and a marker in the OMP session transcript. It follows a persisted session across reload/resume but does not modify global or project configuration. |
+| `session` | Stores an in-memory role override and a marker in the OMP session transcript. It follows a persisted session across reload/resume, does not modify global or project configuration, and is the default when `--scope` is omitted. |
 
 Setting or clearing one scope does not delete another scope. For example, a session preset continues to take precedence if you change the global preset underneath it.
 
@@ -56,7 +56,7 @@ The plugin starts empty. Configure the roles you want through OMP's normal model
 /preset new experiment --scope session
 ```
 
-The new preset becomes active at the requested scope. Continue changing roles through OMP's normal model settings; before you switch to another preset, create another preset, or clear a scope with `/preset default`, the plugin copies the current roles from the effective active scope back into that preset automatically.
+The new preset becomes active at the requested scope. Preset definitions are snapshots: changing OMP's live model settings after applying one does not modify `model-presets.json`. To replace a preset, delete it and create it again from the roles you want to capture.
 
 No preset definitions are bundled, so upgrading the plugin never changes, overwrites, or conflicts with your roles, and never pins a model id that the providers have since retired.
 
@@ -90,7 +90,7 @@ Switching presets is meant to feel like pointing at a different config file, so 
 /preset default --scope session
 ```
 
-The first time a preset is applied to the global or project scope, the plugin snapshots that scope's existing `modelRoles` (a `model-presets.base.json` sidecar; the session scope keeps its snapshot in the transcript). `/preset default` writes that snapshot back, re-points the live model at the restored `default` role, and removes the snapshot — so the scope is exactly as it was before presets. If the scope had no roles to begin with, `default` clears it. Preset definitions are never deleted. Before restoring, the plugin first saves any pending role tweaks into the currently active preset.
+The first time a preset is applied to the global or project scope, the plugin snapshots that scope's existing `modelRoles` (a `model-presets.base.json` sidecar; the session scope keeps its snapshot in the transcript). `/preset default` writes that snapshot back, re-points the live model at the restored `default` role, and removes the snapshot — so the scope is exactly as it was before presets. If the scope had no roles to begin with, `default` clears it. Preset definitions are never changed or deleted by restoring a scope.
 
 ## What it changes
 
