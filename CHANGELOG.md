@@ -2,6 +2,12 @@
 
 All notable changes to this package are documented here.
 
+## 0.11.0 - 2026-09-27
+
+### Fixed
+
+- Fixed `/preset` on OMP 18.3.1 and later. OMP replaced its string-keyed settings writes (`set`, `clearOverride`) with typed setting handles, so applying or resetting a preset in any scope failed with a "not a function" error, and a session with an active preset failed to restore it on start. The plugin now writes model roles through OMP's `modelRoles` setting handle. OMP 18.3.0 and earlier are no longer supported.
+
 ## 0.10.0 - 2026-09-17
 
 ### Added

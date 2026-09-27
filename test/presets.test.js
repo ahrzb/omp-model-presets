@@ -6,6 +6,9 @@ import test from "node:test";
 
 import modelPresets from "../index.js";
 
+const MODEL_ROLES = { id: "modelRoles" };
+const resolveModelRolesSetting = async () => MODEL_ROLES;
+
 function createSettings(globalRoles = {}) {
   let global = { ...globalRoles };
   const project = {};
@@ -31,9 +34,11 @@ function createSettings(globalRoles = {}) {
       if (Object.hasOwn(global, role)) return "global";
       return "default";
     },
-    set(path, value) {
-      assert.equal(path, "modelRoles");
-      global = { ...value };
+    writeValue(setting, value, layer) {
+      assert.equal(setting, MODEL_ROLES);
+      if (layer === "global") global = { ...value };
+      else if (layer === "override") runtime = { ...value };
+      else assert.fail(`Unexpected settings layer '${layer}'`);
     },
     setProjectModelRole(role, value) {
       project[role] = value;
@@ -41,15 +46,11 @@ function createSettings(globalRoles = {}) {
     clearProjectModelRole(role) {
       project[role] = null;
     },
-    override(path, value) {
-      assert.equal(path, "modelRoles");
-      runtime = { ...value };
-    },
     overrideModelRoles(value) {
       runtime = { ...runtime, ...value };
     },
-    clearOverride(path) {
-      assert.equal(path, "modelRoles");
+    clearOverrideValue(setting) {
+      assert.equal(setting, MODEL_ROLES);
       runtime = {};
     },
     async flush() {},
@@ -148,7 +149,7 @@ test("presets apply independently to global, project, and session scopes", async
     },
   };
 
-  modelPresets(pi);
+  modelPresets(pi, { resolveModelRolesSetting });
   await events.get("session_start")({ type: "session_start" }, ctx);
   assert.deepEqual(
     command.getArgumentCompletions("op").map(({ label, hint }) => ({ label, hint })),
@@ -206,7 +207,7 @@ test("presets apply independently to global, project, and session scopes", async
   await handler("openai --scope session", ctx);
   assert.deepEqual(selectedModel, { id: "openai-codex/gpt-5.6-sol" });
 
-  settings.clearOverride("modelRoles");
+  settings.clearOverrideValue(MODEL_ROLES);
   await events.get("session_start")({ type: "session_start" }, ctx);
   assert.match(settings.layers().runtime.default, /^openai-codex\//);
   assert.equal(
@@ -321,7 +322,7 @@ test("default restores the pre-preset base configuration", async (t) => {
     async reload() {},
   };
 
-  modelPresets(pi);
+  modelPresets(pi, { resolveModelRolesSetting });
   await start({ type: "session_start" }, ctx);
 
   await handler("openai --scope global", ctx);

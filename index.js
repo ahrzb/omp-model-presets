@@ -338,10 +338,21 @@ function roleMap(value) {
   );
 }
 
-function settingsFor(pi) {
+// OMP 18.3.1 replaced string-keyed settings writes (`set`, `override`,
+// `clearOverride`) with typed setting handles. The specifier must stay a string
+// literal: OMP's extension loader rewrites it onto the host's own registry, so
+// the handle is the one the live `Settings` instance recognizes.
+async function lookupModelRolesSetting() {
+  const { lookup } = await import("@oh-my-pi/pi-coding-agent/config/registry");
+  return lookup("modelRoles");
+}
+
+async function settingsFor(pi, state) {
   const settings = pi.pi?.settings;
   if (!settings) throw new Error("This OMP version does not expose scoped settings");
-  return settings;
+  state.modelRoles ??= await state.resolveModelRolesSetting();
+  if (!state.modelRoles) throw new Error("This OMP version does not register the modelRoles setting");
+  return { settings, modelRoles: state.modelRoles };
 }
 
 function sessionState(ctx) {
@@ -378,17 +389,18 @@ function runtimeBase(settings, current) {
   );
 }
 
-function applySessionRoles(settings, preset, base) {
-  settings.clearOverride("modelRoles");
-  settings.overrideModelRoles(base);
-  settings.overrideModelRoles(preset);
+// Replaces the whole runtime layer so roles from a previously applied session
+// preset cannot survive into the next one.
+function applySessionRoles({ settings, modelRoles }, preset, base) {
+  settings.writeValue(modelRoles, { ...base, ...preset }, "override");
 }
 
 async function setScopedRoles(pi, ctx, storage, scope, preset, name, runtimeState) {
-  const settings = settingsFor(pi);
+  const host = await settingsFor(pi, runtimeState);
+  const { settings, modelRoles } = host;
   if (scope === "global") {
     await captureBaseIfNeeded(storage, "global", rolesForScope(settings, "global"));
-    settings.set("modelRoles", preset);
+    settings.writeValue(modelRoles, preset, "global");
     await settings.flush();
     return;
   }
@@ -404,16 +416,17 @@ async function setScopedRoles(pi, ctx, storage, scope, preset, name, runtimeStat
   }
   const current = sessionState(ctx);
   const base = runtimeBase(settings, current);
-  applySessionRoles(settings, preset, base);
+  applySessionRoles(host, preset, base);
   runtimeState.base = base;
   setSessionState(pi, name, base);
 }
 
 async function resetScope(pi, ctx, storage, scope, runtimeState) {
-  const settings = settingsFor(pi);
+  const host = await settingsFor(pi, runtimeState);
+  const { settings, modelRoles } = host;
   if (scope === "global") {
     const base = await readBaseRoles(storage.globalBaseFile);
-    settings.set("modelRoles", base ?? {});
+    settings.writeValue(modelRoles, base ?? {}, "global");
     await settings.flush();
     await setActivePreset(storage.globalActiveFile);
     await rm(storage.globalBaseFile, { force: true });
@@ -432,21 +445,21 @@ async function resetScope(pi, ctx, storage, scope, runtimeState) {
   }
   const current = sessionState(ctx);
   const base = runtimeBase(settings, current);
-  applySessionRoles(settings, {}, base);
+  applySessionRoles(host, {}, base);
   runtimeState.base = undefined;
   setSessionState(pi, null, base);
 }
 
 async function restoreSessionPreset(pi, ctx, runtimeState) {
   const current = sessionState(ctx);
-  const settings = settingsFor(pi);
+  const host = await settingsFor(pi, runtimeState);
   if (!current) {
-    if (runtimeState.base !== undefined) applySessionRoles(settings, {}, runtimeState.base);
+    if (runtimeState.base !== undefined) applySessionRoles(host, {}, runtimeState.base);
     runtimeState.base = undefined;
     return;
   }
   if (current.name === null) {
-    applySessionRoles(settings, {}, current.base);
+    applySessionRoles(host, {}, current.base);
     runtimeState.base = undefined;
     return;
   }
@@ -454,7 +467,7 @@ async function restoreSessionPreset(pi, ctx, runtimeState) {
   const presets = await readCustomPresets(storage.presetsFile);
   const preset = presets[current.name];
   if (!preset) throw new Error(`Session preset '${current.name}' no longer exists`);
-  applySessionRoles(settings, preset, current.base);
+  applySessionRoles(host, preset, current.base);
   runtimeState.base = current.base;
 }
 
@@ -462,9 +475,9 @@ function emptyPresetHint(action) {
   return `${action} No presets defined yet. Create one with '/preset new <name>'.`;
 }
 
-export default function modelPresets(pi) {
+export default function modelPresets(pi, { resolveModelRolesSetting = lookupModelRolesSetting } = {}) {
   pi.setLabel("Model Presets");
-  const runtimeState = { base: undefined };
+  const runtimeState = { base: undefined, modelRoles: undefined, resolveModelRolesSetting };
   const completionState = { names: [], hintsInstalled: false };
   const staleState = { warned: false };
 
@@ -488,7 +501,7 @@ export default function modelPresets(pi) {
       try {
         const { action, rest, scope } = parseCommand(args);
         const storage = await presetStorage(pi, ctx.cwd);
-        const settings = settingsFor(pi);
+        const { settings } = await settingsFor(pi, runtimeState);
 
         if (action === "new") {
           const name = rest.join(" ");
