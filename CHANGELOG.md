@@ -2,6 +2,16 @@
 
 All notable changes to this package are documented here.
 
+## 0.12.0 - 2026-10-06
+
+### Changed
+
+- Role changes made through OMP's model settings while a session or global preset is in effect now edit that preset. Previously OMP wrote them to the global `config.yml`, the preset definition never changed, and the edit was gone the next time the preset was applied. Under a session preset the edit is also undone in the global `config.yml`, so leaving the preset brings back your previous roles. Only the effective preset and the edited role are written. Edits under a project preset are not tracked.
+
+### Fixed
+
+- Fixed a session preset selected before the first message of a new session silently dropping out. The plugin reloaded OMP after every `/preset` command, and the reload discarded the not-yet-saved session's preset selection. `/preset` no longer reloads OMP; roles take effect in the running process.
+
 ## 0.11.0 - 2026-09-27
 
 ### Fixed

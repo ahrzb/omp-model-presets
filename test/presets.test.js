@@ -40,6 +40,10 @@ function createSettings(globalRoles = {}) {
       else if (layer === "override") runtime = { ...value };
       else assert.fail(`Unexpected settings layer '${layer}'`);
     },
+    // Role-edit tracking is covered against real OMP in e2e.test.js.
+    onEffectiveChange() {
+      return () => {};
+    },
     setProjectModelRole(role, value) {
       project[role] = value;
     },
@@ -86,7 +90,6 @@ test("presets apply independently to global, project, and session scopes", async
   let inlineProvider;
   let selectedModel;
   let thinkingLevel;
-  let reloads = 0;
 
   const pi = {
     pi: { settings },
@@ -143,9 +146,6 @@ test("presets apply independently to global, project, and session scopes", async
       resolve(spec) {
         return { id: spec };
       },
-    },
-    async reload() {
-      reloads += 1;
     },
   };
 
@@ -319,7 +319,6 @@ test("default restores the pre-preset base configuration", async (t) => {
     sessionManager: { getBranch: () => [] },
     ui: { notify() {}, addAutocompleteProvider() {} },
     models: { resolve: (spec) => ({ id: spec }) },
-    async reload() {},
   };
 
   modelPresets(pi, { resolveModelRolesSetting });

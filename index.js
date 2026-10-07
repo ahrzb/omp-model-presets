@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -110,10 +110,12 @@ async function presetStorage(pi, cwd) {
   };
 }
 
-async function readCustomPresets(file) {
+// Synchronous because OMP notifies role changes synchronously and the edit
+// watcher in `watchRoleEdits` has to finish inside that notification.
+function readCustomPresets(file) {
   let presets;
   try {
-    presets = JSON.parse(await readFile(file, "utf8"));
+    presets = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
     if (error?.code === "ENOENT") return {};
     throw new Error(`Could not read ${file}: ${error instanceof Error ? error.message : String(error)}`);
@@ -124,13 +126,13 @@ async function readCustomPresets(file) {
   return presets;
 }
 
-async function writeCustomPresets(file, presets) {
-  await writeFile(file, `${JSON.stringify(presets, null, 2)}\n`, "utf8");
+function writeCustomPresets(file, presets) {
+  writeFileSync(file, `${JSON.stringify(presets, null, 2)}\n`, "utf8");
 }
 
-async function readActivePreset(file) {
+function readActivePreset(file) {
   try {
-    const name = (await readFile(file, "utf8")).trim();
+    const name = readFileSync(file, "utf8").trim();
     if (!name) return undefined;
     validatePresetName(name);
     return name;
@@ -309,7 +311,7 @@ function installPresetInlineHints(ctx, completionState) {
 async function refreshCompletionPresets(pi, cwd, completionState) {
   try {
     const storage = await presetStorage(pi, cwd);
-    const custom = await readCustomPresets(storage.presetsFile);
+    const custom = readCustomPresets(storage.presetsFile);
     completionState.names = Object.keys(custom);
   } catch (error) {
     pi.logger?.warn?.("Could not refresh preset completions", { error });
@@ -381,26 +383,105 @@ function rolesForScope(settings, scope) {
   return roleMap(layer.modelRoles);
 }
 
-function runtimeBase(settings, current) {
-  if (current) return current.base;
+function runtimeRoles(settings) {
   return Object.fromEntries(
     Object.entries(settings.getModelRoles())
       .filter(([role]) => settings.getModelRoleProvenance(role) === "runtime"),
   );
 }
 
+function runtimeBase(settings, current) {
+  return current ? current.base : runtimeRoles(settings);
+}
+
 // Replaces the whole runtime layer so roles from a previously applied session
-// preset cannot survive into the next one.
-function applySessionRoles({ settings, modelRoles }, preset, base) {
-  settings.writeValue(modelRoles, { ...base, ...preset }, "override");
+// preset cannot survive into the next one. `applied` records what this process
+// put there, so a later difference in that layer is an edit made here.
+function applySessionRoles({ settings, modelRoles }, runtimeState, preset, base) {
+  runtimeState.applied = { ...base, ...preset };
+  settings.writeValue(modelRoles, runtimeState.applied, "override");
+}
+
+// The plugin's own global writes go through here so the edit watcher never
+// mistakes them for an edit and copies them into a preset.
+function writeGlobalRoles({ settings, modelRoles }, runtimeState, roles) {
+  runtimeState.globalRoles = roles;
+  settings.writeValue(modelRoles, roles, "global");
+}
+
+// Session beats project beats global, matching how OMP layers model roles.
+function effectivePreset(ctx, storage) {
+  const session = sessionState(ctx);
+  if (session?.name) return { scope: "session", name: session.name, base: session.base };
+  const project = readActivePreset(storage.projectActiveFile);
+  if (project) return { scope: "project", name: project };
+  const global = readActivePreset(storage.globalActiveFile);
+  if (global) return { scope: "global", name: global };
+  return undefined;
+}
+
+function changedRoles(before, after) {
+  const changes = new Map();
+  for (const role of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (before[role] !== after[role]) changes.set(role, after[role]);
+  }
+  return changes;
+}
+
+// OMP saves every role edit (model selector, `/model`) to the global config.yml
+// and gives extensions no way to redirect that write, only a notification
+// after it. So the plugin moves the edit into the preset in effect afterwards:
+// - session preset: for a role the session layer carries, OMP updates that
+//   layer too, which marks the edit as made in this process. The edit is
+//   written to the preset definition and undone in the global config.
+// - global preset: config.yml is the preset's applied copy, so a change there
+//   is written to the preset definition too.
+// Not covered: project presets (OMP reports no change while a project role
+// shadows the edited one), and roles a session preset and its base lack.
+function watchRoleEdits(host, runtimeState) {
+  const { settings, modelRoles } = host;
+  runtimeState.unwatch?.();
+  runtimeState.globalRoles = rolesForScope(settings, "global");
+  runtimeState.unwatch = settings.onEffectiveChange([modelRoles], () => {
+    const before = runtimeState.globalRoles;
+    const global = rolesForScope(settings, "global");
+    runtimeState.globalRoles = global;
+    const { ctx, storage } = runtimeState;
+    const target = effectivePreset(ctx, storage);
+    if (target?.scope !== "session" && target?.scope !== "global") return;
+    const edits = target.scope === "session"
+      ? changedRoles(runtimeState.applied ?? {}, runtimeRoles(settings))
+      : changedRoles(before, global);
+    if (edits.size === 0) return;
+
+    const presets = readCustomPresets(storage.presetsFile);
+    if (!Object.hasOwn(presets, target.name)) return;
+    const preset = { ...presets[target.name] };
+    for (const [role, spec] of edits) {
+      if (spec === undefined) delete preset[role];
+      else preset[role] = spec;
+    }
+    validatePreset(target.name, preset);
+    presets[target.name] = preset;
+    writeCustomPresets(storage.presetsFile, presets);
+    if (target.scope === "global") return;
+
+    applySessionRoles(host, runtimeState, preset, target.base);
+    const restored = { ...global };
+    for (const role of edits.keys()) {
+      if (Object.hasOwn(before, role)) restored[role] = before[role];
+      else delete restored[role];
+    }
+    writeGlobalRoles(host, runtimeState, restored);
+  });
 }
 
 async function setScopedRoles(pi, ctx, storage, scope, preset, name, runtimeState) {
   const host = await settingsFor(pi, runtimeState);
-  const { settings, modelRoles } = host;
+  const { settings } = host;
   if (scope === "global") {
     await captureBaseIfNeeded(storage, "global", rolesForScope(settings, "global"));
-    settings.writeValue(modelRoles, preset, "global");
+    writeGlobalRoles(host, runtimeState, preset);
     await settings.flush();
     return;
   }
@@ -416,17 +497,17 @@ async function setScopedRoles(pi, ctx, storage, scope, preset, name, runtimeStat
   }
   const current = sessionState(ctx);
   const base = runtimeBase(settings, current);
-  applySessionRoles(host, preset, base);
+  applySessionRoles(host, runtimeState, preset, base);
   runtimeState.base = base;
   setSessionState(pi, name, base);
 }
 
 async function resetScope(pi, ctx, storage, scope, runtimeState) {
   const host = await settingsFor(pi, runtimeState);
-  const { settings, modelRoles } = host;
+  const { settings } = host;
   if (scope === "global") {
     const base = await readBaseRoles(storage.globalBaseFile);
-    settings.writeValue(modelRoles, base ?? {}, "global");
+    writeGlobalRoles(host, runtimeState, base ?? {});
     await settings.flush();
     await setActivePreset(storage.globalActiveFile);
     await rm(storage.globalBaseFile, { force: true });
@@ -445,7 +526,7 @@ async function resetScope(pi, ctx, storage, scope, runtimeState) {
   }
   const current = sessionState(ctx);
   const base = runtimeBase(settings, current);
-  applySessionRoles(host, {}, base);
+  applySessionRoles(host, runtimeState, {}, base);
   runtimeState.base = undefined;
   setSessionState(pi, null, base);
 }
@@ -454,20 +535,19 @@ async function restoreSessionPreset(pi, ctx, runtimeState) {
   const current = sessionState(ctx);
   const host = await settingsFor(pi, runtimeState);
   if (!current) {
-    if (runtimeState.base !== undefined) applySessionRoles(host, {}, runtimeState.base);
+    if (runtimeState.base !== undefined) applySessionRoles(host, runtimeState, {}, runtimeState.base);
     runtimeState.base = undefined;
     return;
   }
   if (current.name === null) {
-    applySessionRoles(host, {}, current.base);
+    applySessionRoles(host, runtimeState, {}, current.base);
     runtimeState.base = undefined;
     return;
   }
-  const storage = await presetStorage(pi, ctx.cwd);
-  const presets = await readCustomPresets(storage.presetsFile);
+  const presets = readCustomPresets(runtimeState.storage.presetsFile);
   const preset = presets[current.name];
   if (!preset) throw new Error(`Session preset '${current.name}' no longer exists`);
-  applySessionRoles(host, preset, current.base);
+  applySessionRoles(host, runtimeState, preset, current.base);
   runtimeState.base = current.base;
 }
 
@@ -488,6 +568,9 @@ export default function modelPresets(pi, { resolveModelRolesSetting = lookupMode
         completionState.hintsInstalled = true;
       }
       await warnIfStaleModule(ctx, staleState);
+      runtimeState.ctx = ctx;
+      runtimeState.storage = await presetStorage(pi, ctx.cwd);
+      watchRoleEdits(await settingsFor(pi, runtimeState), runtimeState);
       await restoreSessionPreset(pi, ctx, runtimeState);
       await refreshCompletionPresets(pi, ctx.cwd, completionState);
     });
@@ -501,6 +584,8 @@ export default function modelPresets(pi, { resolveModelRolesSetting = lookupMode
       try {
         const { action, rest, scope } = parseCommand(args);
         const storage = await presetStorage(pi, ctx.cwd);
+        runtimeState.ctx = ctx;
+        runtimeState.storage = storage;
         const { settings } = await settingsFor(pi, runtimeState);
 
         if (action === "new") {
@@ -512,18 +597,17 @@ export default function modelPresets(pi, { resolveModelRolesSetting = lookupMode
           }
 
           const roles = settings.getModelRoles();
-          const custom = await readCustomPresets(storage.presetsFile);
+          const custom = readCustomPresets(storage.presetsFile);
           if (Object.hasOwn(custom, name)) {
             throw new Error(`Preset '${name}' already exists`);
           }
           validatePreset(name, roles);
           custom[name] = roles;
-          await writeCustomPresets(storage.presetsFile, custom);
+          writeCustomPresets(storage.presetsFile, custom);
           completionState.names = Object.keys(custom);
           await setScopedRoles(pi, ctx, storage, scope, roles, name, runtimeState);
           if (scope !== "session") await setActivePreset(activeFile(storage, scope), name);
           ctx.ui.notify(`Preset '${name}' created and selected for ${scope} scope`, "info");
-          await ctx.reload();
           return;
         }
 
@@ -531,10 +615,10 @@ export default function modelPresets(pi, { resolveModelRolesSetting = lookupMode
           const name = rest.join(" ");
           if (!name) throw new Error("Usage: /preset delete <name>");
           validatePresetName(name);
-          const custom = await readCustomPresets(storage.presetsFile);
+          const custom = readCustomPresets(storage.presetsFile);
           if (!Object.hasOwn(custom, name)) throw new Error(`Preset '${name}' does not exist`);
           delete custom[name];
-          await writeCustomPresets(storage.presetsFile, custom);
+          writeCustomPresets(storage.presetsFile, custom);
           completionState.names = Object.keys(custom);
 
           const cleared = [];
@@ -542,7 +626,7 @@ export default function modelPresets(pi, { resolveModelRolesSetting = lookupMode
             ["global", storage.globalActiveFile],
             ["project", storage.projectActiveFile],
           ]) {
-            if ((await readActivePreset(file)) === name) {
+            if (readActivePreset(file) === name) {
               await setActivePreset(file);
               cleared.push(scopeName);
             }
@@ -574,12 +658,11 @@ export default function modelPresets(pi, { resolveModelRolesSetting = lookupMode
             }
           }
           ctx.ui.notify(`Default model roles restored for ${scope} scope`, "info");
-          await ctx.reload();
           return;
         }
 
         if (action === "list") {
-          const presets = await readCustomPresets(storage.presetsFile);
+          const presets = readCustomPresets(storage.presetsFile);
           const names = Object.keys(presets);
           ctx.ui.notify(
             names.length > 0
@@ -591,10 +674,10 @@ export default function modelPresets(pi, { resolveModelRolesSetting = lookupMode
         }
 
         if (action === "current") {
-          const presets = await readCustomPresets(storage.presetsFile);
+          const presets = readCustomPresets(storage.presetsFile);
           const session = sessionState(ctx)?.name;
-          const project = await readActivePreset(storage.projectActiveFile);
-          const global = await readActivePreset(storage.globalActiveFile);
+          const project = readActivePreset(storage.projectActiveFile);
+          const global = readActivePreset(storage.globalActiveFile);
           const active = [
             session && `session=${session}`,
             project && `project=${project}`,
@@ -610,7 +693,7 @@ export default function modelPresets(pi, { resolveModelRolesSetting = lookupMode
           return;
         }
 
-        const presets = await readCustomPresets(storage.presetsFile);
+        const presets = readCustomPresets(storage.presetsFile);
         const preset = Object.hasOwn(presets, action) ? presets[action] : undefined;
         if (!preset) {
           const names = Object.keys(presets);
@@ -645,7 +728,6 @@ export default function modelPresets(pi, { resolveModelRolesSetting = lookupMode
           }
         }
         ctx.ui.notify(`Preset '${action}' applied to ${resolved.size} roles for ${scope} scope`, "info");
-        await ctx.reload();
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
       }

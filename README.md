@@ -1,6 +1,6 @@
 # OMP Model Presets
 
-Switch every [Oh My Pi](https://github.com/can1357/oh-my-pi) model role at once with a slash command. Presets are yours: the plugin ships none and never rewrites the ones you define.
+Switch every [Oh My Pi](https://github.com/can1357/oh-my-pi) model role at once with a slash command. Presets are yours: the plugin ships none, and a preset changes only when you edit a role while it is in effect.
 
 ## Install
 
@@ -58,7 +58,19 @@ The plugin starts empty. Configure the roles you want through OMP's normal model
 /preset new experiment --scope session
 ```
 
-The new preset becomes active at the requested scope. Preset definitions are snapshots: changing OMP's live model settings after applying one does not modify `model-presets.json`. To replace a preset, delete it and create it again from the roles you want to capture.
+The new preset becomes active at the requested scope.
+
+### Editing a preset
+
+While a preset is in effect, changing a role through OMP's model settings (the model selector, `/model`) edits that preset: the change is written into its entry in `model-presets.json`.
+
+| Effective preset | What happens to the role change |
+| --- | --- |
+| `session` | Written to the preset definition and applied to the live session. OMP saves it to the global `config.yml` first; the plugin undoes that, so leaving the preset brings back your previous roles. |
+| `global` | Written to the preset definition and kept in the global `config.yml`, which holds that preset's applied copy. |
+| `project` | Not tracked. OMP saves it to the global `config.yml`, where the project preset's roles shadow it. |
+
+The effective preset is the session one if set, else the project one, else the global one. Only that preset and only the edited role change; other presets are never written. In a session preset, a role that neither the preset nor the roles underneath it define is left to OMP and goes to the global `config.yml`. With no preset in effect, role changes go to the global `config.yml` as usual. Applying, switching, and clearing presets never write preset definitions.
 
 No preset definitions are bundled, so upgrading the plugin never changes, overwrites, or conflicts with your roles, and never pins a model id that the providers have since retired.
 
@@ -98,7 +110,7 @@ The first time a preset is applied to the global or project scope, the plugin sn
 
 The plugin replaces the complete `modelRoles` mapping at the selected scope, including `default`, `slow`, `smol`, `plan`, `advisor`, `task`, `designer`, `vision`, `commit`, `tiny`, and `spark`.
 
-Before applying a preset, it verifies that every model resolves in OMP. When the selected scope becomes effective, it switches the active model immediately and reloads OMP so agents and role-based tasks use the selected provider.
+Before applying a preset, it verifies that every model resolves in OMP. When the selected scope becomes effective, it switches the active model immediately; the roles take effect in the running OMP without a reload.
 
 Your provider credentials and access to the configured models must already be available in OMP.
 
@@ -115,6 +127,8 @@ Validate the installed plugin:
 ```sh
 omp plugin doctor @ahrzb/omp-model-presets --json
 ```
+
+Run the tests with `node --test`. `test/e2e.test.js` drives a real `omp` process over its RPC mode in a throwaway agent directory, and is skipped when `omp` is not on `PATH`.
 
 ## Releases
 
